@@ -34,9 +34,19 @@ def test_classifier():
     
     args = parser.parse_args()
     
-    # Initialize classifier
-    print("Loading classifier...")
-    model_path = args.model if os.path.exists(args.model) else None
+    # Try to load trained model first
+    model_paths = [
+        "models/lung_classifier_trained.pth",
+        "models/lung_classifier.pth"
+    ]
+
+    model_path = None
+    for path in model_paths:
+        if os.path.exists(path):
+            model_path = path
+            break
+
+    print(f"Loading classifier with model: {model_path or 'pretrained only'}")
     classifier = LungClassifierTrainer(model_path=model_path)
     
     if args.dummy:
@@ -62,6 +72,12 @@ def test_classifier():
         predictions = classifier.predict(image_path)
         significance = classifier.get_statistical_significance(predictions)
         
+        # When displaying results, highlight pneumothorax specifically
+        if 'Pneumothorax' in predictions and predictions['Pneumothorax'] > 0.2:
+            print(f"\n🚨 CRITICAL: Possible Pneumothorax detected!")
+            print(f"   Confidence: {predictions['Pneumothorax']:.3f}")
+            print(f"   This requires immediate medical attention!")
+
         # Display results
         print("\n" + "="*60)
         print("LUNG DISEASE CLASSIFICATION RESULTS")
@@ -75,14 +91,14 @@ def test_classifier():
             status = "SIGNIFICANT" if sig_data['significant'] else "not significant"
             confidence_level = sig_data['confidence_level']
             
-            # Add visual indicator
-            indicator = "🔴" if sig_data['significant'] and confidence > 0.7 else "🟡" if sig_data['significant'] else "⚪"
+            # Add visual indicator with lower thresholds
+            indicator = "🔴" if sig_data['significant'] and confidence > 0.5 else "🟡" if sig_data['significant'] else "⚪"
             
             print(f"{indicator} {condition:<20} {confidence:.3f} ({confidence_level:>6}) - {status}")
         
         print("\n" + "="*60)
         print("HIGH CONFIDENCE FINDINGS:")
-        high_conf = [cond for cond, data in significance.items() if data['significant'] and data['confidence'] > 0.7]
+        high_conf = [cond for cond, data in significance.items() if data['significant'] and data['confidence'] > 0.5]
         if high_conf:
             for finding in high_conf:
                 print(f"  🚨 {finding} (confidence: {predictions[finding]:.3f})")

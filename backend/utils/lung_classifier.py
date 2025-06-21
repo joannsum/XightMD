@@ -73,15 +73,22 @@ class LungClassifierTrainer:
             
         return results
     
-    def get_statistical_significance(self, predictions: Dict[str, float], threshold: float = 0.5) -> Dict[str, Any]:
-        """Calculate statistical significance of predictions"""
+    def get_statistical_significance(self, predictions: Dict[str, float], threshold: float = 0.3) -> Dict[str, Any]:
+        """Calculate statistical significance of predictions with lower threshold"""
         significant_findings = {}
         
         for condition, confidence in predictions.items():
+            # More sensitive detection
+            is_significant = confidence > threshold
+
+            # Special handling for critical conditions
+            if condition in ['Pneumothorax', 'Pneumonia', 'Mass', 'Edema']:
+                is_significant = confidence > 0.25  # Even lower threshold for critical conditions
+
             significant_findings[condition] = {
                 'confidence': confidence,
-                'significant': confidence > threshold,
-                'confidence_level': 'High' if confidence > 0.8 else 'Medium' if confidence > 0.6 else 'Low'
+                'significant': is_significant,
+                'confidence_level': 'High' if confidence > 0.6 else 'Medium' if confidence > 0.4 else 'Low'
             }
             
         return significant_findings
