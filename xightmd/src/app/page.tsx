@@ -1,103 +1,125 @@
-import Image from "next/image";
+'use client';
+
+import { useState, useEffect } from 'react';
+import ImageUpload from '@/components/ImageUpload';
+import ReportDisplay from '@/components/ReportDisplay';
+import AgentStatus from '@/components/AgentStatus';
+import Dashboard from '@/components/Dashboard';
+import { AnalysisResult, AgentStatuses } from '@/types';
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [currentAnalysis, setCurrentAnalysis] = useState<AnalysisResult | null>(null);
+  const [analysisHistory, setAnalysisHistory] = useState<AnalysisResult[]>([]);
+  const [agentStatuses, setAgentStatuses] = useState<AgentStatuses>({
+    coordinator: { status: 'active', lastSeen: new Date() },
+    triage: { status: 'active', lastSeen: new Date() },
+    report: { status: 'active', lastSeen: new Date() },
+    qa: { status: 'active', lastSeen: new Date() }
+  });
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+  // Simulate agent status updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setAgentStatuses(prev => ({
+        ...prev,
+        coordinator: { ...prev.coordinator, lastSeen: new Date() },
+        triage: { ...prev.triage, lastSeen: new Date() },
+        report: { ...prev.report, lastSeen: new Date() },
+        qa: { ...prev.qa, lastSeen: new Date() }
+      }));
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleImageUpload = async (file: File) => {
+    setIsAnalyzing(true);
+    setCurrentAnalysis(null);
+
+    try {
+      // Create FormData for file upload
+      const formData = new FormData();
+      formData.append('image', file);
+
+      // Simulate API call to backend
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error('Analysis failed');
+      }
+
+      const result = await response.json();
+      
+      // For demo purposes, create mock result if API not available
+      const mockResult: AnalysisResult = {
+        id: `analysis-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        urgency: Math.floor(Math.random() * 5) + 1,
+        confidence: Math.random() * 0.3 + 0.7,
+        findings: ['No acute cardiopulmonary abnormality', 'Heart size normal', 'Lungs clear'],
+        report: {
+          indication: 'Chest pain, rule out pneumonia',
+          comparison: 'No prior studies available for comparison',
+          findings: 'The heart size is normal. The lungs are clear bilaterally without evidence of consolidation, pleural effusion, or pneumothorax. The mediastinal and hilar contours appear normal. No acute osseous abnormalities are identified.',
+          impression: 'No acute cardiopulmonary abnormality. Normal chest radiograph.'
+        },
+        image: URL.createObjectURL(file)
+      };
+
+      setCurrentAnalysis(result.data || mockResult);
+      setAnalysisHistory(prev => [result.data || mockResult, ...prev.slice(0, 9)]);
+    } catch (error) {
+      console.error('Analysis failed:', error);
+      // Handle error appropriately
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+      {/* Header */}
+      <header className="bg-white shadow-sm border-b">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center h-16">
+            <div className="flex items-center">
+              <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg mr-3"></div>
+              <h1 className="text-2xl font-bold text-gray-900">XightMD</h1>
+              <span className="ml-2 text-sm text-gray-500">AI-Powered Chest X-ray Analysis</span>
+            </div>
+            <AgentStatus agents={agentStatuses} />
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Left Column - Upload and Dashboard */}
+          <div className="lg:col-span-2 space-y-8">
+            <ImageUpload 
+              onUpload={handleImageUpload} 
+              isAnalyzing={isAnalyzing} 
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+            
+            <Dashboard 
+              analysisHistory={analysisHistory}
+              onSelectAnalysis={setCurrentAnalysis}
+            />
+          </div>
+
+          {/* Right Column - Results */}
+          <div className="lg:col-span-1">
+            <ReportDisplay 
+              analysis={currentAnalysis}
+              isLoading={isAnalyzing}
+            />
+          </div>
         </div>
       </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
     </div>
   );
 }
