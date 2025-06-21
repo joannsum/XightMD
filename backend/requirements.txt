@@ -1,3 +1,5 @@
+# Python 3.12.10 compatible requirements
+
 # Agent Framework
 uagents==0.22.5
 
@@ -12,9 +14,13 @@ python-multipart==0.0.20
 # Computer Vision and Image Processing
 Pillow==11.2.1
 
-# Machine Learning and Deep Learning
+# Machine Learning and Deep Learning - COMPATIBLE VERSIONS
 torch==2.7.1
 torchvision==0.22.1
+# Note: If you have torchaudio installed and getting conflicts, uninstall it first:
+# pip uninstall torchaudio
+# We don't need torchaudio for chest X-ray analysis
+
 scikit-learn==1.7.0
 
 # Dataset and Data Processing
@@ -46,6 +52,9 @@ aiofiles>=23.0.0
 # Logging and Monitoring
 structlog>=23.0.0
 rich>=13.0.0
+
+# Training utilities
+tqdm>=4.65.0
 
 # Optional: For CUDA support (uncomment if using GPU)
 # torch==2.7.1+cu121 --index-url https://download.pytorch.org/whl/cu121
