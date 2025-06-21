@@ -1,8 +1,52 @@
+# Agent Framework
 uagents==0.22.5
+
+# AI and API Integration
 anthropic==0.54.0
+
+# Web Framework and API
 fastapi==0.115.13
 uvicorn==0.34.3
 python-multipart==0.0.20
-pillow==11.2.1
+
+# Computer Vision and Image Processing
+Pillow==11.2.1
+
+# Machine Learning and Deep Learning
 torch==2.7.1
+torchvision==0.22.1
+scikit-learn==1.7.0
+
+# Dataset and Data Processing
 datasets==3.6.0
+transformers>=4.46.0
+huggingface-hub>=0.26.0
+
+# Data Science and Utilities
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0,<3.0.0
+
+# Additional ML utilities
+scikit-image>=0.22.0
+opencv-python>=4.8.0
+
+# Environment and Configuration
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+
+# Development and Testing
+pytest>=8.0.0
+black>=24.0.0
+isort>=5.13.0
+
+# Async and HTTP
+httpx>=0.25.0
+aiofiles>=23.0.0
+
+# Logging and Monitoring
+structlog>=23.0.0
+rich>=13.0.0
+
+# Optional: For CUDA support (uncomment if using GPU)
+# torch==2.7.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+# torchvision==0.22.1+cu121 --index-url https://download.pytorch.org/whl/cu121
