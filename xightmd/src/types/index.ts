@@ -1,6 +1,7 @@
 // Shared types for XightMD application
 
 export interface AnalysisResult {
+  pdf_data: any;
   id: string;
   timestamp: string;
   urgency: number;
