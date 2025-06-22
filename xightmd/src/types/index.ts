@@ -1,11 +1,10 @@
-// Shared types for XightMD application
+// src/types/index.ts
 
 export interface AnalysisResult {
-  pdf_data: any;
   id: string;
   timestamp: string;
-  urgency: number;
-  confidence: number;
+  urgency: number; // 1-5 scale
+  confidence: number; // 0-1 scale
   findings: string[];
   report: {
     indication: string;
@@ -13,51 +12,76 @@ export interface AnalysisResult {
     findings: string;
     impression: string;
   };
-  image?: string;
-  processing_details?: {
-    model_predictions?: Record<string, number>;
-    statistical_significance?: Record<string, any>;
-    critical_findings?: string[];
-    processing_time_ms?: number;
-    agent_pipeline?: string[];
-    mode?: string;
+  image: string; // base64 data URL
+  pdf_data?: string; // base64 PDF data (optional)
+  hf_analysis?: string; // Raw Hugging Face output
+  model_info?: {
+    primary_model: string;
+    report_generator: string;
+    processing_pipeline: string;
   };
-}
-
-export interface AgentInfo {
-  status: 'active' | 'idle' | 'error' | 'offline';
-  lastSeen: Date | string;
-  details?: Record<string, any>;  // Add this line
 }
 
 export interface AgentStatuses {
-  coordinator: AgentInfo;
-  triage: AgentInfo;
-  report: AgentInfo;
-  qa: AgentInfo;
+  coordinator: AgentStatus;
+  triage: AgentStatus;
+  report: AgentStatus;
+  qa: AgentStatus;
 }
 
-export interface ApiResponse<T> {
-  success: boolean;
-  data?: T;
-  error?: string;
+export interface AgentStatus {
+  status: 'active' | 'idle' | 'error' | 'offline';
+  lastSeen: Date | string;
+  details?: any;
 }
 
-export interface HealthStatus {
-  status: 'healthy' | 'unhealthy';
-  timestamp: string;
-  version: string;
-  services: {
-    frontend: { status: string; responseTime: string };
-    backend: { status: string; responseTime: string; url: string };
-    agents: {
-      coordinator: { status: string; lastSeen: string };
-      triage: { status: string; lastSeen: string };
-      report: { status: string; lastSeen: string };
-      qa: { status: string; lastSeen: string };
-    };
-    claude_api: { status: string; model: string };
+// Hugging Face specific types
+export interface HuggingFaceConfig {
+  model: string;
+  parameters: {
+    max_length: number;
+    min_length: number;
+    do_sample: boolean;
+    temperature: number;
+    top_p: number;
+    repetition_penalty: number;
+    return_full_text: boolean;
   };
-  uptime: number;
-  memory: { used: number; total: number };
+  options: {
+    wait_for_model: boolean;
+    use_cache: boolean;
+  };
+}
+
+export interface ModelStatus {
+  ready: boolean;
+  status: 'ready' | 'loading' | 'error' | 'checking';
+  error?: string;
+  estimated_time?: number;
+  message?: string;
+  model?: string;
+}
+
+export interface ProcessingInfo {
+  hf_model: string;
+  claude_model: string;
+  timestamp: string;
+}
+
+// API Response types
+export interface AnalysisAPIResponse {
+  success: boolean;
+  data?: AnalysisResult;
+  processing_info?: ProcessingInfo;
+  error?: string;
+  details?: string;
+}
+
+export interface ModelStatusAPIResponse {
+  ready: boolean;
+  status: string;
+  error?: string;
+  estimated_time?: number;
+  message?: string;
+  model?: string;
 }

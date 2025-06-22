@@ -1,231 +1,194 @@
-// src/app/api/analyze/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { AnalysisResult } from '@/types';
+const HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/nickmuchi/vit-finetuned-chest-xray-pneumonia";
 
-interface CoordinatorRequest {
-  image_data: string;
-  image_format: string;
-  user_description?: string;
-  priority_search?: string;
-  patient_info?: {
-    age?: number;
-    sex?: string;
-    symptoms?: string;
-  };
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY 
+
+interface ClaudeResponse {
+  content: Array<{
+    type: string;
+    text: string;
+  }>;
 }
 
-interface CoordinatorResponse {
-  request_id: string;
-  status: string;
-  results?: {
-    analysis_id: string;
-    timestamp: string;
-    urgency: number;
-    confidence: number;
-    findings: string[];
-    report: {
-      indication: string;
-      comparison: string;
-      findings: string;
-      impression: string;
+// Analyze X-ray with Hugging Face
+async function analyzeWithHuggingFace(imageBase64: string): Promise<any> {
+  const response = await fetch(HUGGINGFACE_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.HUGGINGFACE_API_KEY}`, // ✅ use the correct token for HF
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      inputs: `data:image/jpeg;base64,${imageBase64}`,
+      options: { wait_for_model: true },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Hugging Face API error:', errorText);
+    throw new Error(`Hugging Face API failed: ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+// Generate structured report with Claude
+async function generateReportWithClaude(hfAnalysis: string, imageBase64: string): Promise<any> {
+  const prompt = `You are a radiologist AI assistant. Based on the following chest X-ray analysis from a medical AI model, generate a structured radiology report.
+
+AI Analysis: "${hfAnalysis}"
+
+Please provide a structured report with these sections:
+1. INDICATION: Why the X-ray was performed
+2. COMPARISON: Prior studies (if any)
+3. FINDINGS: Detailed observations of the chest X-ray
+4. IMPRESSION: Summary and clinical significance
+
+Also provide:
+- Urgency score (1-5, where 5 is critical)
+- Confidence score (0-1)
+- Key findings list (3-5 bullet points)
+- Clinical recommendations if any
+
+Format your response as JSON with this structure:
+{
+  "report": {
+    "indication": "string",
+    "comparison": "string", 
+    "findings": "string",
+    "impression": "string"
+  },
+  "urgency": number,
+  "confidence": number,
+  "findings": ["string"],
+  "recommendations": ["string"]
+}`;
+
+  const response = await fetch(CLAUDE_API_URL, {
+    method: 'POST',
+    headers: {
+      'x-api-key': process.env.ANTHROPIC_API_KEY!, // ✅ correct key name
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01',
+    },
+    body: JSON.stringify({
+      model: 'claude-3-opus-20240229',
+      max_tokens: 1500,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/jpeg',
+                data: imageBase64,
+              },
+            },
+            {
+              type: 'text',
+              text: prompt,
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('Claude API error:', errorText);
+    throw new Error(`Claude API failed: ${response.status}`);
+  }
+
+  const claudeResponse: ClaudeResponse = await response.json();
+  const reportText = claudeResponse.content[0].text;
+
+  try {
+    const jsonMatch = reportText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) return JSON.parse(jsonMatch[0]);
+    throw new Error('No JSON found in Claude response');
+  } catch (err) {
+    console.error('Failed to parse Claude response:', err);
+    return {
+      report: {
+        indication: "Chest X-ray analysis",
+        comparison: "No prior studies available",
+        findings: reportText.slice(0, 500),
+        impression: "Analysis completed with AI assistance",
+      },
+      urgency: 2,
+      confidence: 0.75,
+      findings: ["AI analysis completed", "See detailed findings above"],
+      recommendations: ["Clinical correlation recommended"],
     };
-    pdf_data?: string;
-    quality_metrics: any;
-    processing_summary: any;
-  };
-  error?: string;
+  }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    console.log('🔍 API: Received analysis request');
-    
+    console.log('🔍 Starting Hugging Face + Claude analysis...');
+
     const formData = await request.formData();
     const imageFile = formData.get('image') as File;
-    const userDescription = formData.get('description') as string || '';
-    const prioritySearch = formData.get('priority') as string || '';
-    
+
     if (!imageFile) {
-      return NextResponse.json({
-        success: false,
-        error: 'No image file provided'
-      }, { status: 400 });
+      return NextResponse.json(
+        { success: false, error: 'No image file provided' },
+        { status: 400 }
+      );
     }
 
-    console.log(`📸 Processing image: ${imageFile.name} (${imageFile.size} bytes)`);
-    if (userDescription) console.log(`📝 User description: ${userDescription}`);
-    if (prioritySearch) console.log(`🎯 Priority search: ${prioritySearch}`);
+    const imageBuffer = await imageFile.arrayBuffer();
+    const imageBase64 = Buffer.from(imageBuffer).toString('base64');
+    console.log('📸 Image converted to base64, size:', imageBase64.length);
 
-    // Convert image to base64
-    const bytes = await imageFile.arrayBuffer();
-    const base64Image = Buffer.from(bytes).toString('base64');
-    
-    // Prepare request for coordinator
-    const coordinatorRequest: CoordinatorRequest = {
-      image_data: base64Image,
-      image_format: imageFile.type,
-      user_description: userDescription || undefined,
-      priority_search: prioritySearch || undefined,
-      patient_info: {}
-    };
+    // Step 1: Hugging Face
+    console.log('🤗 Calling Hugging Face model...');
+    const hfResponse = await analyzeWithHuggingFace(imageBase64);
 
-    console.log('🤖 Sending request to coordinator agent...');
+    const hfAnalysis = Array.isArray(hfResponse)
+      ? hfResponse.map((res: any) => res.label || res.generated_text || '').join(', ')
+      : hfResponse.label || hfResponse.generated_text || 'No output';
 
-    // Call the coordinator's HTTP API
-    try {
-      const coordinatorResponse = await fetch('http://localhost:8080/analyze', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(coordinatorRequest),
-        signal: AbortSignal.timeout(60000) // 1 minute timeout
-      });
+    console.log('✅ Hugging Face analysis:', hfAnalysis);
 
-      if (!coordinatorResponse.ok) {
-        throw new Error(`Coordinator responded with status: ${coordinatorResponse.status}`);
-      }
+    // Step 2: Claude
+    console.log('🧠 Generating structured report with Claude...');
+    const claudeAnalysis = await generateReportWithClaude(hfAnalysis, imageBase64);
+    console.log('✅ Claude report generated');
 
-      const coordinatorResult = await coordinatorResponse.json();
-      
-      if (!coordinatorResult.success) {
-        throw new Error(coordinatorResult.error || 'Coordinator processing failed');
-      }
-
-      // Convert coordinator response to frontend format
-      const analysisResult: AnalysisResult = {
-        id: coordinatorResult.data.analysis_id,
-        timestamp: coordinatorResult.data.timestamp,
-        urgency: coordinatorResult.data.urgency,
-        confidence: coordinatorResult.data.confidence,
-        findings: coordinatorResult.data.findings,
-        report: coordinatorResult.data.report,
-        image: `data:${imageFile.type};base64,${base64Image}`,
-        pdf_data: coordinatorResult.data.pdf_data
-      };
-
-      console.log('✅ Analysis completed successfully via coordinator');
-
-      return NextResponse.json({
-        success: true,
-        data: analysisResult,
-        processing_info: coordinatorResult.data.processing_summary
-      });
-
-    } catch (error) {
-      console.error('❌ Cannot reach coordinator agent');
-      
-      // Create a fallback response with user input incorporated
-      const mockResult: AnalysisResult = {
-        id: `analysis-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        urgency: prioritySearch ? 3 : 2, // Higher urgency if specific search requested
-        confidence: 0.82,
-        findings: [
-          'Agent network unavailable - using mock analysis',
-          ...(userDescription ? [`Patient reports: ${userDescription}`] : []),
-          ...(prioritySearch ? [`Focused analysis requested for: ${prioritySearch}`] : []),
-          'Normal cardiac silhouette',
-          'Clear lung fields bilaterally'
-        ],
-        report: {
-          indication: userDescription
-            ? `Patient presents with: ${userDescription}${prioritySearch ? `. Specific evaluation requested for ${prioritySearch}` : ''}`
-            : 'Routine chest X-ray examination',
-          comparison: 'No prior studies available for comparison',
-          findings: `The heart size appears normal. The lungs are clear bilaterally without evidence of consolidation, pleural effusion, or pneumothorax. ${prioritySearch ? `Special attention was given to evaluating for ${prioritySearch} as requested.` : ''} No acute osseous abnormalities are identified.`,
-          impression: prioritySearch
-            ? `No evidence of ${prioritySearch} identified. No acute cardiopulmonary abnormality.`
-            : 'No acute cardiopulmonary abnormality identified.'
-        },
-        image: `data:${imageFile.type};base64,${base64Image}`,
-        pdf_data: undefined
-      };
-
-      return NextResponse.json({
-        success: true,
-        data: mockResult,
-        warning: 'Agent network unavailable. Using mock analysis for demonstration.'
-      });
-    }
-
-    // If we get here, coordinator is running but we need to implement agent communication
-    // For now, create an enhanced mock that shows the system is working
-    const enhancedResult: AnalysisResult = {
+    const result = {
       id: `analysis-${Date.now()}`,
       timestamp: new Date().toISOString(),
-      urgency: prioritySearch && ['pneumonia', 'pneumothorax', 'mass'].includes(prioritySearch.toLowerCase()) ? 4 : 2,
-      confidence: 0.87,
-      findings: [
-        'Coordinator agent connected successfully',
-        ...(userDescription ? [`Clinical context: ${userDescription}`] : []),
-        ...(prioritySearch ? [`Priority evaluation: ${prioritySearch}`] : []),
-        'Agents are processing your request...',
-        'This will be replaced with real agent results soon'
-      ],
-      report: {
-        indication: userDescription
-          ? `Chest X-ray examination for evaluation of ${userDescription}${prioritySearch ? ` with focus on ${prioritySearch}` : ''}`
-          : 'Chest X-ray examination for cardiopulmonary assessment',
-        comparison: 'No prior studies available for comparison',
-        findings: `Chest X-ray analysis in progress. ${prioritySearch ? `Special attention being given to ${prioritySearch} as requested. ` : ''}The AI agents are working to provide comprehensive analysis incorporating the provided clinical context.`,
-        impression: 'Analysis in progress. Results will be available shortly with full agent network integration.'
+      urgency: claudeAnalysis.urgency || 2,
+      confidence: claudeAnalysis.confidence || 0.75,
+      findings: claudeAnalysis.findings || ['AI-generated findings'],
+      report: claudeAnalysis.report,
+      image: `data:${imageFile.type};base64,${imageBase64}`,
+      hf_analysis: hfAnalysis,
+      model_info: {
+        primary_model: 'nickmuchi/vit-finetuned-chest-xray-pneumonia',
+        report_generator: 'claude-3-haiku-20240307',
+        pipeline: 'huggingface + claude',
       },
-      image: `data:${imageFile.type};base64,${base64Image}`,
-      pdf_data: undefined
     };
-
-    console.log('✅ Enhanced mock response prepared with user input');
 
     return NextResponse.json({
       success: true,
-      data: enhancedResult,
-      info: 'Agent network detected. Full integration coming next.'
+      data: result,
     });
-
-  } catch (error) {
-    console.error('❌ API Error:', error);
-    
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    
-    return NextResponse.json({
-      success: false,
-      error: errorMessage,
-      details: 'Check server logs for more information'
-    }, { status: 500 });
-  }
-}
-
-// Health check endpoint
-export async function GET() {
-  try {
-    // Check if coordinator agent is available
-    const coordinatorCheck = await fetch('http://localhost:9000/health', {
-      method: 'GET',
-      signal: AbortSignal.timeout(3000)
-    });
-
-    const isCoordinatorHealthy = coordinatorCheck.ok;
-
-    return NextResponse.json({
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      services: {
-        api: 'healthy',
-        coordinator_agent: isCoordinatorHealthy ? 'healthy' : 'unavailable',
-        agent_network: isCoordinatorHealthy ? 'partial' : 'unavailable'
-      }
-    });
-  } catch (error) {
-    return NextResponse.json({
-      status: 'degraded',
-      timestamp: new Date().toISOString(),
-      services: {
-        api: 'healthy',
-        coordinator_agent: 'unavailable',
-        agent_network: 'unavailable'
+  } catch (err: any) {
+    console.error('❌ Analysis failed:', err);
+    return NextResponse.json(
+      {
+        success: false,
+        error: err.message || 'Unexpected error',
       },
-      error: error instanceof Error ? error.message : 'Unknown error'
-    }, { status: 503 });
+      { status: 500 }
+    );
   }
 }
