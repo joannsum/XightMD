@@ -1,1 +1,68 @@
+# Environment variables
 .env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+
+# Test files and scripts
+test_*.py
+*_test.py
+diagnose.py
+validate_setup.py
+start_agents.py
+
+# Training and model development files
+train_*.py
+*_train.py
+
+# Temporary files
+*.tmp
+*.temp
+temp_*
+
+# Log files
+logs/
+*.log
+
+# Model files (optional - uncomment if you don't want to track models)
+# models/
+# *.pth
+# *.pkl
+# *.joblib
+
+# Data files
+*.png
+*.jpg
+*.jpeg
+*.PNG
+*.JPG
+*.JPEG
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

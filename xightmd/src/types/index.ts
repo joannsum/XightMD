@@ -1,19 +1,5 @@
 // Shared types for XightMD application
 
-export type AgentStatus = 'active' | 'idle' | 'error' | 'offline';
-
-export interface AgentInfo {
-  status: AgentStatus;
-  lastSeen: Date;
-}
-
-export interface AgentStatuses {
-  coordinator: AgentInfo;
-  triage: AgentInfo;
-  report: AgentInfo;
-  qa: AgentInfo;
-}
-
 export interface AnalysisResult {
   id: string;
   timestamp: string;
@@ -26,7 +12,28 @@ export interface AnalysisResult {
     findings: string;
     impression: string;
   };
-  image: string;
+  image?: string;
+  processing_details?: {
+    model_predictions?: Record<string, number>;
+    statistical_significance?: Record<string, any>;
+    critical_findings?: string[];
+    processing_time_ms?: number;
+    agent_pipeline?: string[];
+    mode?: string;
+  };
+}
+
+export interface AgentInfo {
+  status: 'active' | 'idle' | 'error' | 'offline';
+  lastSeen: Date | string;
+  details?: Record<string, any>;  // Add this line
+}
+
+export interface AgentStatuses {
+  coordinator: AgentInfo;
+  triage: AgentInfo;
+  report: AgentInfo;
+  qa: AgentInfo;
 }
 
 export interface ApiResponse<T> {
