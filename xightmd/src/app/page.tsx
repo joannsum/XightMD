@@ -18,17 +18,54 @@ export default function Home() {
     qa: { status: 'active', lastSeen: new Date() }
   });
 
-  // Simulate agent status updates
+  // Fetch real agent status updates
   useEffect(() => {
-    const interval = setInterval(() => {
-      setAgentStatuses(prev => ({
-        ...prev,
-        coordinator: { ...prev.coordinator, lastSeen: new Date() },
-        triage: { ...prev.triage, lastSeen: new Date() },
-        report: { ...prev.report, lastSeen: new Date() },
-        qa: { ...prev.qa, lastSeen: new Date() }
-      }));
-    }, 5000);
+    const fetchAgentStatus = async () => {
+      try {
+        console.log('🔍 Fetching agent status...');
+        const response = await fetch('/api/agent-status');
+        if (response.ok) {
+          const data = await response.json();
+          console.log('📊 Agent status response:', data);
+          if (data.success && data.agents) {
+            // Convert API response to the format expected by frontend
+            const formattedAgents: AgentStatuses = {
+              coordinator: {
+                status: data.agents.coordinator?.status || 'offline',
+                lastSeen: data.agents.coordinator?.lastSeen ? new Date(data.agents.coordinator.lastSeen) : new Date(),
+                details: data.agents.coordinator?.details || {}
+              },
+              triage: {
+                status: data.agents.triage?.status || 'offline', 
+                lastSeen: data.agents.triage?.lastSeen ? new Date(data.agents.triage.lastSeen) : new Date(),
+                details: data.agents.triage?.details || {}
+              },
+              report: {
+                status: data.agents.report?.status || 'offline',
+                lastSeen: data.agents.report?.lastSeen ? new Date(data.agents.report.lastSeen) : new Date(), 
+                details: data.agents.report?.details || {}
+              },
+              qa: {
+                status: data.agents.qa?.status || 'offline',
+                lastSeen: data.agents.qa?.lastSeen ? new Date(data.agents.qa.lastSeen) : new Date(),
+                details: data.agents.qa?.details || {}
+              }
+            };
+            
+            setAgentStatuses(formattedAgents);
+          }
+        }
+      } catch (error) {
+        console.error('❌ Failed to fetch agent status:', error);
+        // Keep previous status on error
+      }
+    };
+
+    // Initial fetch
+    fetchAgentStatus();
+
+    // Set up polling every 10 seconds
+    const interval = setInterval(fetchAgentStatus, 10000);
 
     return () => clearInterval(interval);
   }, []);

@@ -1,3 +1,4 @@
+// src/api/health/route.ts
 import { NextResponse } from 'next/server';
 
 export async function GET() {
@@ -42,12 +43,15 @@ export async function GET() {
     };
 
     return NextResponse.json(healthStatus);
-  } catch (error) {
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+    
     return NextResponse.json(
       {
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
-        error: 'Health check failed'
+        error: 'Health check failed',
+        details: errorMessage
       },
       { status: 500 }
     );

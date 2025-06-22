@@ -1,38 +1,108 @@
+# backend/api/server.py
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import base64
 import asyncio
 import uuid
+import httpx
 from datetime import datetime
 from typing import Dict, Any, Optional
 import os
 import sys
+import logging
 
-# Add agents directory to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'agents'))
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-from coordinator import CoordinatorAgent, AnalysisRequest
+# Add the backend directory to the Python path to import utils
+backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, backend_dir)
 
 app = FastAPI(title="XightMD API", version="1.0.0")
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js frontend
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Global coordinator agent instance
-coordinator_agent = None
-analysis_results = {}  # Store completed analysis results
+# Agent endpoint configuration for health checks
+AGENT_PORTS = {
+    "coordinator": 8000,  # This server
+    "triage": 9001,       # Updated ports to match uAgents
+    "report": 9002,
+    "qa": 9003
+}
+
+# Store completed analysis results
+analysis_results = {}
 
 class APIServer:
     def __init__(self):
-        self.coordinator = None
+        self.lung_classifier = None
+        self.model_loaded = False
         self.setup_routes()
+        self.initialize_model()
+    
+    def initialize_model(self):
+        """Initialize the lung classifier model"""
+        try:
+            logger.info("🤖 Initializing lung disease classifier...")
+            
+            # Check if model file exists
+            model_path = os.path.join(backend_dir, 'models', 'lung_classifier_best.pth')
+            if not os.path.exists(model_path):
+                logger.warning(f"⚠️ Model file not found at {model_path}")
+                logger.info("Available files in models directory:")
+                models_dir = os.path.join(backend_dir, 'models')
+                if os.path.exists(models_dir):
+                    for file in os.listdir(models_dir):
+                        logger.info(f"  - {file}")
+                else:
+                    logger.warning(f"Models directory does not exist: {models_dir}")
+                return
+            
+            # Import and initialize the lung classifier
+            from utils.lung_classifier import LungClassifierTrainer
+            
+            self.lung_classifier = LungClassifierTrainer()
+            
+            # Test that the model can be loaded with a simple test
+            logger.info("🧪 Testing model with dummy prediction...")
+            
+            # Create a simple test image
+            import tempfile
+            from PIL import Image
+            
+            test_image = Image.new('RGB', (224, 224), color='gray')
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
+                test_image.save(temp_file.name)
+                temp_path = temp_file.name
+            
+            try:
+                test_predictions = self.lung_classifier.predict(temp_path)
+                if test_predictions and isinstance(test_predictions, dict):
+                    self.model_loaded = True
+                    logger.info(f"✅ Lung classifier model loaded successfully! Found {len(test_predictions)} prediction classes")
+                else:
+                    logger.warning("⚠️ Model loaded but test prediction returned invalid result")
+            finally:
+                # Clean up test file
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                
+        except ImportError as e:
+            logger.error(f"❌ Failed to import lung classifier: {e}")
+            logger.info("Make sure utils/lung_classifier.py exists and all dependencies are installed")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize lung classifier: {e}")
+            import traceback
+            traceback.print_exc()
     
     def setup_routes(self):
         """Setup API routes"""
@@ -42,29 +112,34 @@ class APIServer:
             """Analyze uploaded chest X-ray image"""
             try:
                 # Validate file
-                if not file.content_type.startswith('image/'):
+                if not file.content_type or not file.content_type.startswith('image/'):
                     raise HTTPException(status_code=400, detail="File must be an image")
                 
-                # Read and encode image
+                # Check file size (15MB limit)
+                file_size = 0
                 image_data = await file.read()
+                file_size = len(image_data)
+                
+                if file_size > 15 * 1024 * 1024:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"File size ({file_size / 1024 / 1024:.1f}MB) exceeds 15MB limit"
+                    )
+                
+                # Encode image
                 base64_image = base64.b64encode(image_data).decode('utf-8')
                 
                 # Generate request ID
                 request_id = str(uuid.uuid4())
                 
-                # Create analysis request
-                analysis_request = AnalysisRequest(
-                    image_data=base64_image,
-                    image_format=file.content_type,
-                    patient_info={}
-                )
+                logger.info(f"🔍 Starting analysis for request {request_id} (file: {file.filename}, size: {file_size / 1024 / 1024:.1f}MB)")
                 
-                # For development - simulate agent processing
-                # In production, this would go through the actual agent network
-                result = await self.simulate_agent_analysis(
+                # Analyze with lung classifier
+                result = await self.analyze_with_lung_classifier(
                     base64_image, 
                     file.content_type, 
-                    request_id
+                    request_id,
+                    file.filename
                 )
                 
                 return JSONResponse(content={
@@ -75,7 +150,9 @@ class APIServer:
             except HTTPException:
                 raise
             except Exception as e:
-                print(f"Analysis error: {e}")
+                logger.error(f"❌ Analysis error: {e}")
+                import traceback
+                traceback.print_exc()
                 raise HTTPException(status_code=500, detail=str(e))
 
         @app.get("/api/health")
@@ -85,44 +162,101 @@ class APIServer:
                 "status": "healthy",
                 "timestamp": datetime.now().isoformat(),
                 "version": "1.0.0",
-                "services": {
-                    "api": {"status": "up", "port": 8000},
-                    "agents": {
-                        "coordinator": {"status": "active", "address": "coordinator_agent"},
-                        "triage": {"status": "active", "address": "triage_agent"},
-                        "report": {"status": "mock", "address": "report_agent"},
-                        "qa": {"status": "mock", "address": "qa_agent"}
-                    }
-                }
+                "service": "xightmd_api",
+                "model_loaded": self.model_loaded,
+                "lung_classifier": "available" if self.model_loaded else "unavailable"
             }
 
         @app.get("/api/agents/status")
         async def get_agent_status():
-            """Get status of all agents"""
-            return {
-                "success": True,
-                "data": {
-                    "coordinator": {
-                        "status": "active",
-                        "lastSeen": datetime.now().isoformat(),
-                        "capabilities": ["Request coordination", "Result compilation"]
-                    },
-                    "triage": {
-                        "status": "active", 
-                        "lastSeen": datetime.now().isoformat(),
-                        "capabilities": ["Lung disease detection", "Urgency assessment"]
-                    },
-                    "report": {
-                        "status": "active",
-                        "lastSeen": datetime.now().isoformat(),
-                        "capabilities": ["Report generation", "Medical formatting"]
-                    },
-                    "qa": {
-                        "status": "active",
-                        "lastSeen": datetime.now().isoformat(),
-                        "capabilities": ["Quality validation", "Consistency checking"]
+            """Get real status of all agents"""
+            agent_statuses = {}
+            
+            # Check coordinator (this server)
+            agent_statuses["coordinator"] = {
+                "status": "active",
+                "lastSeen": datetime.now().isoformat(),
+                "details": {
+                    "capabilities": ["Image analysis", "Lung classification", "Report generation"],
+                    "port": 8000,
+                    "health": "healthy",
+                    "service": "fastapi_api",
+                    "model_loaded": self.model_loaded
+                }
+            }
+            
+            # Check triage agent (lung classifier)
+            if self.model_loaded:
+                agent_statuses["triage"] = {
+                    "status": "active",
+                    "lastSeen": datetime.now().isoformat(),
+                    "details": {
+                        "capabilities": ["Lung disease detection", "Medical image analysis"],
+                        "model": "lung_classifier_best.pth",
+                        "type": "ml_model",
+                        "health": "loaded"
                     }
                 }
+            else:
+                agent_statuses["triage"] = {
+                    "status": "offline",
+                    "lastSeen": "",
+                    "details": {
+                        "error": "Model not loaded",
+                        "type": "ml_model",
+                        "health": "unavailable"
+                    }
+                }
+            
+            # Check other agents by port (if they exist)
+            async with httpx.AsyncClient() as client:
+                for agent_name, port in AGENT_PORTS.items():
+                    if agent_name in ["coordinator", "triage"]:
+                        continue  # Already handled above
+                        
+                    try:
+                        import socket
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(1)
+                        result = sock.connect_ex(('localhost', port))
+                        sock.close()
+                        
+                        if result == 0:
+                            agent_statuses[agent_name] = {
+                                "status": "active",
+                                "lastSeen": datetime.now().isoformat(),
+                                "details": {
+                                    "port": port,
+                                    "type": "uagent",
+                                    "connection": "listening"
+                                }
+                            }
+                        else:
+                            agent_statuses[agent_name] = {
+                                "status": "offline",
+                                "lastSeen": "",
+                                "details": {
+                                    "error": "Not running",
+                                    "port": port,
+                                    "type": "uagent"
+                                }
+                            }
+                    except Exception as e:
+                        agent_statuses[agent_name] = {
+                            "status": "offline",
+                            "lastSeen": "",
+                            "details": {
+                                "error": "Not available",
+                                "port": port,
+                                "type": "uagent"
+                            }
+                        }
+            
+            return {
+                "success": True,
+                "agents": agent_statuses,
+                "timestamp": datetime.now().isoformat(),
+                "network_health": "optimal" if self.model_loaded else "degraded"
             }
 
         @app.get("/api/analysis/{request_id}")
@@ -136,33 +270,77 @@ class APIServer:
             else:
                 raise HTTPException(status_code=404, detail="Analysis not found")
 
-    async def simulate_agent_analysis(self, image_data: str, image_format: str, request_id: str) -> Dict[str, Any]:
-        """Simulate the agent analysis workflow for development"""
+        @app.get("/api/model/status")
+        async def get_model_status():
+            """Get detailed model status"""
+            model_info = {
+                "model_loaded": self.model_loaded,
+                "model_path": os.path.join(backend_dir, 'models', 'lung_classifier_best.pth'),
+                "model_exists": os.path.exists(os.path.join(backend_dir, 'models', 'lung_classifier_best.pth')),
+                "backend_dir": backend_dir,
+                "python_path": sys.path[:3]  # First 3 entries
+            }
+            
+            if self.lung_classifier:
+                try:
+                    # Get model info if available
+                    model_info["classifier_type"] = type(self.lung_classifier).__name__
+                    if hasattr(self.lung_classifier, 'labels'):
+                        model_info["supported_labels"] = self.lung_classifier.labels
+                except:
+                    pass
+            
+            return model_info
+
+        @app.get("/")
+        async def root():
+            """Root endpoint"""
+            return {
+                "message": "XightMD Backend API",
+                "version": "1.0.0",
+                "status": "running",
+                "model_status": "loaded" if self.model_loaded else "not_loaded",
+                "endpoints": {
+                    "health": "/api/health",
+                    "analyze": "/api/analyze",
+                    "agent_status": "/api/agents/status",
+                    "model_status": "/api/model/status",
+                    "docs": "/docs"
+                }
+            }
+
+    async def analyze_with_lung_classifier(self, image_data: str, image_format: str, request_id: str, filename: str = None) -> Dict[str, Any]:
+        """Use lung classifier for analysis"""
+        start_time = datetime.now()
+        
         try:
-            # Import and use the actual lung classifier
-            from utils.lung_classifier import LungClassifierTrainer
+            if not self.model_loaded or not self.lung_classifier:
+                logger.warning("🤖 Lung classifier not available, using fallback")
+                return self.create_fallback_result(
+                    image_data, image_format, request_id, 
+                    "Lung classifier model not loaded"
+                )
+            
+            logger.info(f"🤖 Running lung disease classification...")
+            
+            # Decode and save image temporarily
             import tempfile
-            import base64
             from PIL import Image
             import io
             
-            # Initialize classifier
-            classifier = LungClassifierTrainer()
-            
-            # Decode and save image temporarily
             image_bytes = base64.b64decode(image_data)
             image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
             
             with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
-                image.save(temp_file.name)
+                image.save(temp_file.name, quality=95)
                 temp_path = temp_file.name
             
             try:
                 # Get predictions from the actual model
-                predictions = classifier.predict(temp_path)
-                significance = classifier.get_statistical_significance(predictions)
+                predictions = self.lung_classifier.predict(temp_path)
+                significance = self.lung_classifier.get_statistical_significance(predictions)
                 
-                # Calculate urgency and other metrics
+                # Calculate metrics
                 urgency_score = self.calculate_urgency(significance)
                 confidence_score = self.calculate_overall_confidence(predictions)
                 critical_findings = self.identify_critical_findings(significance)
@@ -170,40 +348,102 @@ class APIServer:
                 # Generate structured report
                 report = self.generate_report(significance, predictions, urgency_score)
                 
+                processing_time = (datetime.now() - start_time).total_seconds() * 1000
+                
+                logger.info(f"✅ Analysis complete - Urgency: {urgency_score}, Confidence: {confidence_score:.2f}, Time: {processing_time:.0f}ms")
+                
                 # Create final result
                 result = {
-                    'id': f'analysis-{request_id}',
+                    'id': f'analysis-{request_id[:8]}',
                     'timestamp': datetime.now().isoformat(),
                     'urgency': urgency_score,
                     'confidence': confidence_score,
                     'findings': [
                         f.split(' (confidence:')[0] for f in critical_findings
                     ] + [
-                        data['condition'] for condition, data in significance.items() 
+                        condition for condition, data in significance.items() 
                         if data['significant'] and data['confidence'] > 0.5
-                    ],
+                    ][:5],  # Limit to top 5 findings
                     'report': report,
-                    'image': f'data:{image_format};base64,{image_data}',
+                    'image': f'data:{image_format};base64,{image_data[:100]}...',  # Truncated for response
                     'processing_details': {
-                        'model_predictions': predictions,
-                        'statistical_significance': significance,
+                        'model_predictions': {k: round(v, 3) for k, v in predictions.items()},
+                        'statistical_significance': {
+                            k: {
+                                'significant': v['significant'],
+                                'confidence': round(v['confidence'], 3),
+                                'confidence_level': v['confidence_level']
+                            } for k, v in significance.items() if v['significant']
+                        },
                         'critical_findings': critical_findings,
-                        'processing_time_ms': 2000  # Simulated processing time
+                        'processing_time_ms': round(processing_time),
+                        'pipeline': ['image_preprocessing', 'lung_classifier', 'report_generator'],
+                        'mode': 'ml_analysis',
+                        'filename': filename,
+                        'model': 'lung_classifier_best.pth'
                     }
                 }
                 
-                # Store result
+                # Store result for later retrieval
                 analysis_results[request_id] = result
                 
                 return result
                 
             finally:
                 # Clean up temp file
-                os.unlink(temp_path)
-                
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                        
         except Exception as e:
-            print(f"Error in simulate_agent_analysis: {e}")
-            raise e
+            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+            logger.error(f"❌ Lung classifier error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            return self.create_fallback_result(
+                image_data, image_format, request_id, 
+                f"Classifier error: {str(e)}", processing_time
+            )
+
+    def create_fallback_result(self, image_data: str, image_format: str, request_id: str, error_msg: str, processing_time: float = 500) -> Dict[str, Any]:
+        """Create a fallback result when the lung classifier isn't available"""
+        logger.info(f"🔄 Creating fallback analysis result: {error_msg}")
+        
+        result = {
+            'id': f'analysis-{request_id[:8]}',
+            'timestamp': datetime.now().isoformat(),
+            'urgency': 2,
+            'confidence': 0.5,
+            'findings': [
+                'Image processed successfully',
+                'Automated analysis unavailable',
+                'Manual radiologist review recommended'
+            ],
+            'report': {
+                'indication': 'Chest imaging for evaluation of cardiopulmonary status',
+                'comparison': 'No prior studies available for comparison',
+                'findings': ('The submitted chest radiograph has been received and processed. '
+                           'Image quality appears adequate for diagnostic interpretation. '
+                           'Automated lung disease classification is currently unavailable. '
+                           'Manual radiologist review is recommended for comprehensive evaluation.'),
+                'impression': ('Image successfully processed. '
+                             'Automated analysis system temporarily unavailable. '
+                             'Recommend manual radiologist review for detailed findings and clinical correlation.')
+            },
+            'image': f'data:{image_format};base64,{image_data[:100]}...',
+            'processing_details': {
+                'mode': 'fallback_processing',
+                'error': error_msg,
+                'recommendation': 'Check model file and dependencies',
+                'pipeline': ['image_processor', 'basic_validator'],
+                'processing_time_ms': processing_time,
+                'model': 'unavailable'
+            }
+        }
+        
+        # Store result
+        analysis_results[request_id] = result
+        return result
 
     def calculate_urgency(self, significance: Dict[str, Any]) -> int:
         """Calculate urgency score from 1-5"""
@@ -362,14 +602,16 @@ class APIServer:
 # Create API server instance
 api_server = APIServer()
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize services on startup"""
-    print("XightMD API Server starting...")
-    print("Lung classifier model loading...")
-    # The lung classifier will be loaded on first use
-
 if __name__ == "__main__":
     import uvicorn
-    print("Starting XightMD API Server...")
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    logger.info("🏗️ Starting XightMD API Server...")
+    logger.info(f"📁 Backend directory: {backend_dir}")
+    logger.info(f"🤖 Model file: {os.path.join(backend_dir, 'models', 'lung_classifier_best.pth')}")
+    
+    uvicorn.run(
+        "server:app", 
+        host="0.0.0.0", 
+        port=8000, 
+        reload=True,
+        log_level="info"
+    )
