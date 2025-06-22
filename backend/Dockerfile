@@ -18,8 +18,11 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy the rest of the application
 COPY . .
 
+# Make the start script executable
+RUN chmod +x start.sh
+
 # Expose port
 EXPOSE 8000
 
-# Start the FastAPI server
-CMD ["python", "api/server.py"]
+# Use the start script instead of just the API server
+CMD ["./start.sh"]
