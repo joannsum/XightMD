@@ -3,7 +3,7 @@
 import { useState, useRef, DragEvent } from 'react';
 
 interface ImageUploadProps {
-  onUpload: (file: File) => void;
+  onUpload: (file: File, description?: string, priority?: string) => void;
   isAnalyzing: boolean;
 }
 
@@ -11,6 +11,9 @@ export default function ImageUpload({ onUpload, isAnalyzing }: ImageUploadProps)
   const [dragActive, setDragActive] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>('');
+  const [userDescription, setUserDescription] = useState('');
+  const [prioritySearch, setPrioritySearch] = useState('');
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDrag = (e: DragEvent) => {
@@ -59,17 +62,24 @@ export default function ImageUpload({ onUpload, isAnalyzing }: ImageUploadProps)
 
   const handleSubmit = () => {
     if (selectedFile) {
-      onUpload(selectedFile);
+      onUpload(selectedFile, userDescription.trim() || undefined, prioritySearch.trim() || undefined);
     }
   };
 
   const handleReset = () => {
     setSelectedFile(null);
     setPreviewUrl('');
+    setUserDescription('');
+    setPrioritySearch('');
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
+
+  const commonConditions = [
+    'pneumonia', 'pneumothorax', 'pleural effusion', 'atelectasis', 
+    'cardiomegaly', 'consolidation', 'mass', 'nodule', 'fracture'
+  ];
 
   return (
     <div className="bg-white rounded-xl shadow-lg p-6">
@@ -149,6 +159,94 @@ export default function ImageUpload({ onUpload, isAnalyzing }: ImageUploadProps)
             </div>
           </div>
 
+          {/* Advanced Options Toggle */}
+          <div className="border-t pt-4">
+            <button
+              onClick={() => setShowAdvancedOptions(!showAdvancedOptions)}
+              className="flex items-center space-x-2 text-blue-600 hover:text-blue-700 font-medium"
+            >
+              <svg 
+                className={`w-4 h-4 transition-transform ${showAdvancedOptions ? 'rotate-90' : ''}`} 
+                fill="none" 
+                stroke="currentColor" 
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              <span>Advanced Analysis Options</span>
+            </button>
+            
+            {showAdvancedOptions && (
+              <div className="mt-4 space-y-4 bg-blue-50 p-4 rounded-lg">
+                {/* User Description */}
+                <div>
+                  <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-2">
+                    Patient Symptoms or Clinical History
+                  </label>
+                  <textarea
+                    id="description"
+                    rows={3}
+                    value={userDescription}
+                    onChange={(e) => setUserDescription(e.target.value)}
+                    placeholder="Describe symptoms, concerns, or clinical history (optional)..."
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={isAnalyzing}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Example: "Patient complains of chest pain and shortness of breath"
+                  </p>
+                </div>
+
+                {/* Priority Search */}
+                <div>
+                  <label htmlFor="priority" className="block text-sm font-medium text-gray-700 mb-2">
+                    Specific Areas of Interest
+                  </label>
+                  <input
+                    type="text"
+                    id="priority"
+                    value={prioritySearch}
+                    onChange={(e) => setPrioritySearch(e.target.value)}
+                    placeholder="What should we specifically look for? (optional)"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    disabled={isAnalyzing}
+                  />
+                  
+                  {/* Quick Selection Buttons */}
+                  <div className="mt-2">
+                    <p className="text-xs text-gray-500 mb-2">Quick selections:</p>
+                    <div className="flex flex-wrap gap-2">
+                      {commonConditions.map((condition) => (
+                        <button
+                          key={condition}
+                          type="button"
+                          onClick={() => setPrioritySearch(condition)}
+                          className="px-3 py-1 text-xs bg-gray-200 hover:bg-gray-300 rounded-full transition-colors capitalize"
+                          disabled={isAnalyzing}
+                        >
+                          {condition}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Info Box */}
+                <div className="bg-blue-100 border border-blue-200 rounded-lg p-3">
+                  <div className="flex items-start space-x-2">
+                    <svg className="w-5 h-5 text-blue-600 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <div className="text-sm text-blue-800">
+                      <p className="font-medium">Enhanced AI Analysis</p>
+                      <p>Providing additional context helps our AI generate more accurate and relevant reports.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Action Buttons */}
           <div className="flex space-x-4">
             <button
@@ -166,7 +264,12 @@ export default function ImageUpload({ onUpload, isAnalyzing }: ImageUploadProps)
                   <span>Analyzing...</span>
                 </div>
               ) : (
-                'Analyze X-ray'
+                <div className="flex items-center justify-center space-x-2">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                  </svg>
+                  <span>Analyze X-ray</span>
+                </div>
               )}
             </button>
             
@@ -192,12 +295,16 @@ export default function ImageUpload({ onUpload, isAnalyzing }: ImageUploadProps)
             </div>
             <p className="text-blue-700 font-medium">AI agents are analyzing your chest X-ray...</p>
           </div>
+          <div className="mt-3 space-y-1 text-blue-600 text-sm">
+            <p>🔍 Triage Agent: Detecting abnormalities and assessing urgency</p>
+            <p>📄 Report Agent: Generating structured radiology report with Claude AI</p>
+            <p>✅ QA Agent: Validating findings and ensuring quality</p>
+          </div>
           <p className="text-blue-600 text-sm mt-2">
-            This typically takes 10-30 seconds depending on image complexity.
+            This typically takes 30-60 seconds for comprehensive analysis.
           </p>
         </div>
       )}
     </div>
   );
-}
-
+  }

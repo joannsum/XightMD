@@ -139,7 +139,8 @@ export default function Home() {
           findings: 'Unable to analyze image due to system error. Please check that the backend server and agent network are running properly.',
           impression: 'System maintenance required. Mock result displayed for demonstration purposes.'
         },
-        image: URL.createObjectURL(file)
+        image: URL.createObjectURL(file),
+        pdf_data: undefined
       };
 
       setCurrentAnalysis(mockResult);
