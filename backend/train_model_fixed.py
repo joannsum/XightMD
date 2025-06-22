@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from datasets import load_dataset
 from utils.lung_classifier import LungClassifierTrainer, LungDiseaseClassifier, LABELS
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 import argparse
 import os
 from PIL import Image
@@ -12,6 +13,11 @@ import pandas as pd
 from tqdm import tqdm
 import json
 import re
+
+def get_condition_name(condition_idx):
+    if condition_idx is not None and 0 <= condition_idx < len(LABELS):
+        return LABELS[condition_idx]
+    return "all_conditions"
 
 def extract_epoch_from_checkpoint(checkpoint_path):
     try:
@@ -47,7 +53,6 @@ class NIHChestXrayDataset(Dataset):
             if self.transform:
                 image = self.transform(image)
                 
-            # Handle the actual label format (list of strings)
             labels = torch.zeros(len(LABELS), dtype=torch.float32)
             label_list = item.get('label', [])
             
@@ -100,34 +105,45 @@ def train_model(args):
         print(f"❌ Error loading dataset: {e}")
         return
 
-    # Quick check of first sample
     first_sample = next(iter(dataset['train']))
     print(f"Sample label format: {first_sample.get('label', [])}")
 
-    checkpoint_dir = 'models/checkpoints'
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    current_condition = get_condition_name(args.condition_idx)
+    print(f"\n🎯 Training for condition: {current_condition} (Index: {args.condition_idx})")
+
+    condition_checkpoint_dir = os.path.join('models/checkpoints', current_condition)
+    os.makedirs(condition_checkpoint_dir, exist_ok=True)
     trainer = LungClassifierTrainer()
 
-    print("\nDEBUG METRICS INFO:")
+    condition_idx = args.condition_idx if hasattr(args, 'condition_idx') else None
+    subset_data = args.subset_data if hasattr(args, 'subset_data') else None
+
+    if subset_data:
+        dataset = NIHChestXrayDataset(
+            subset_data,
+            transform=trainer.transform,
+            max_samples=args.max_samples if hasattr(args, 'max_samples') else None
+        )
     device = trainer.device
     model = trainer.model
     criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, factor=0.5)
+    scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=2, factor=0.5)
 
     start_epoch = 0
-    best_val_loss = float('inf')
+    best_accuracy = 0.0
+    patience_counter = 0
     training_history = []
     
     if args.resume_checkpoint:
-        print(f"📂 Loading checkpoint: {args.resume_checkpoint}")
+        print(f"📂 Loading checkpoint for {current_condition}: {args.resume_checkpoint}")
         try:
             checkpoint = torch.load(args.resume_checkpoint, map_location=device)
             model.load_state_dict(checkpoint['model_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
             start_epoch = extract_epoch_from_checkpoint(args.resume_checkpoint) or checkpoint['epoch']
-            best_val_loss = checkpoint.get('val_loss', float('inf'))
+            best_accuracy = checkpoint.get('best_accuracy', 0.0)
             training_history = checkpoint.get('training_history', [])
             print(f"✅ Resumed from epoch {start_epoch}")
         except Exception as e:
@@ -139,9 +155,10 @@ def train_model(args):
     for epoch in range(start_epoch, start_epoch + args.epochs):
         print(f"\n🔄 Epoch {epoch+1}")
 
-        # Training
         model.train()
         train_loss = 0.0
+        correct = 0
+        total = 0
         train_preds = []
         train_targets = []
         train_iter = iter(train_dataset_stream)
@@ -154,25 +171,21 @@ def train_model(args):
         while processed_samples < args.samples_per_epoch:
             try:
                 item = next(train_iter)
-
-                image = item['image']
-                if image.mode != 'RGB':
-                    image = image.convert('RGB')
+                image = item['image'].convert('RGB')
                 image_tensor = trainer.transform(image)
 
-                # Handle labels
                 labels = torch.zeros(len(LABELS), dtype=torch.float32)
                 label_list = item.get('label', [])
-                
+                    
                 if isinstance(label_list, list):
                     for disease_name in label_list:
                         disease_name = disease_name.strip()
                         if disease_name in LABELS:
                             label_idx = LABELS.index(disease_name)
-                            labels[label_idx] = 1.0
-                        elif disease_name == 'Pleural_Thickening' and 'Pleural Thickening' in LABELS:
-                            label_idx = LABELS.index('Pleural Thickening')
-                            labels[label_idx] = 1.0
+                        labels[label_idx] = 1.0
+
+                if condition_idx is not None:
+                    labels = labels[condition_idx].unsqueeze(0)
                 batch_images.append(image_tensor)
                 batch_labels.append(labels)
                 processed_samples += 1
@@ -184,10 +197,15 @@ def train_model(args):
 
                     optimizer.zero_grad()
                     outputs = model(images_batch)
+
+                    if condition_idx is not None:
+                        outputs = outputs[:, condition_idx].unsqueeze(1)
                     loss = criterion(outputs, labels_batch)
                     loss.backward()
                     optimizer.step()
-
+                    predictions = (outputs > 0.5).float()
+                    correct += (predictions == labels_batch).sum().item()
+                    total += labels_batch.numel()
                     train_loss += loss.item()
                     train_preds.append(outputs.detach().cpu().numpy())
                     train_targets.append(labels_batch.cpu().numpy())
@@ -203,127 +221,74 @@ def train_model(args):
 
         progress_bar.close()
 
-        # Handle remaining batch
-        if batch_images:
-            images_batch = torch.stack(batch_images).to(device)
-            labels_batch = torch.stack(batch_labels).to(device)
-            optimizer.zero_grad()
-            outputs = model(images_batch)
-            loss = criterion(outputs, labels_batch)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item()
-            train_preds.append(outputs.detach().cpu().numpy())
-            train_targets.append(labels_batch.cpu().numpy())
+        epoch_accuracy = correct / total if total > 0 else 0
 
-        # Validation
-        model.eval()
-        val_loss = 0.0
-        val_preds = []
-        val_targets = []
-        val_iter = iter(train_dataset_stream)
-        val_processed = 0
-
-        with torch.no_grad():
-            while val_processed < args.val_samples:
-                try:
-                    item = next(val_iter)
-                    image = item['image'].convert('RGB')
-                    image_tensor = trainer.transform(image).unsqueeze(0).to(device)
-
-                    labels = torch.zeros(1, len(LABELS), dtype=torch.float32).to(device)
-                    label_list = item.get('label', [])
-                    
-                    if isinstance(label_list, list):
-                        for disease_name in label_list:
-                            disease_name = disease_name.strip()
-                            if disease_name in LABELS:
-                                label_idx = LABELS.index(disease_name)
-                                labels[0, label_idx] = 1.0
-
-                    outputs = model(image_tensor)
-                    loss = criterion(outputs, labels)
-                    val_loss += loss.item()
-                    val_preds.append(outputs.cpu().numpy())
-                    val_targets.append(labels.cpu().numpy())
-                    val_processed += 1
-
-                except (StopIteration, Exception):
-                    val_iter = iter(train_dataset_stream)
-                    continue
-
-        # Calculate metrics
-        num_batches = len(train_preds)
-        train_loss /= max(num_batches, 1)
-        val_loss /= max(val_processed, 1)
-
-        if train_preds and train_targets:
-            train_preds_np = np.concatenate(train_preds)
-            train_targets_np = np.concatenate(train_targets)
-            train_metrics = calculate_metrics(train_targets_np, train_preds_np)
-        else:
-            train_metrics = {'hamming_loss': 0.0, 'avg_precision': 0.0, 'f1_macro': 0.0, 'f1_micro': 0.0}
-
-        if val_preds and val_targets:
-            val_preds_np = np.concatenate(val_preds)
-            val_targets_np = np.concatenate(val_targets)
-            val_metrics = calculate_metrics(val_targets_np, val_preds_np)
-        else:
-            val_metrics = {'hamming_loss': 0.0, 'avg_precision': 0.0, 'f1_macro': 0.0, 'f1_micro': 0.0}
-
-        scheduler.step(val_loss)
-
-        # Log results
-        print(f"Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
-        print(f"Train Hamming: {train_metrics['hamming_loss']:.4f} | Val Hamming: {val_metrics['hamming_loss']:.4f}")
-        print(f"Positive labels found: {positive_labels_count}")
-        if args.verbose:
-            print(f"Train F1: {train_metrics['f1_macro']:.4f} | Val F1: {val_metrics['f1_macro']:.4f}")
-
-        epoch_stats = {
-            'epoch': epoch + 1,
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-            'train_metrics': train_metrics,
-            'val_metrics': val_metrics,
-            'learning_rate': optimizer.param_groups[0]['lr'],
-            'positive_labels': positive_labels_count
-        }
-        training_history.append(epoch_stats)
-
-        # Save checkpoints
-        if (epoch + 1) % args.checkpoint_freq == 0:
-            checkpoint_path = os.path.join(checkpoint_dir, f'lung_classifier_checkpoint_epoch_{epoch+1}.pth')
+        if epoch_accuracy > best_accuracy:
+            best_accuracy = epoch_accuracy
+            patience_counter = 0
+            best_model_path = os.path.join(condition_checkpoint_dir, f'best_model_{current_condition}.pth')
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
-                'val_loss': val_loss,
-                'val_metrics': val_metrics,
-                'training_history': training_history
-            }, checkpoint_path)
+                'best_accuracy': best_accuracy,
+                'training_history': training_history,
+                'condition': current_condition,
+                'condition_idx': args.condition_idx
+            }, best_model_path)
+            print(f"✅ Saved best model for {current_condition} with accuracy: {best_accuracy:.4f}")
+        else:
+            patience_counter += 1
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            print(f"💾 New best model (Val Loss: {val_loss:.4f})")
-            os.makedirs('models', exist_ok=True)
+        if hasattr(args, 'early_stopping_patience') and patience_counter >= args.early_stopping_patience:
+            print(f"Early stopping triggered after {epoch + 1} epochs")
+            break
+
+        scheduler.step(epoch_accuracy)
+
+        epoch_stats = {
+            'epoch': epoch + 1,
+            'train_loss': train_loss,
+            'accuracy': epoch_accuracy,
+            'learning_rate': optimizer.param_groups[0]['lr'],
+            'positive_labels': positive_labels_count
+        }
+        training_history.append(epoch_stats)
+
+        if (epoch + 1) % args.checkpoint_freq == 0:
+            checkpoint_path = os.path.join(
+                condition_checkpoint_dir,
+                f'{current_condition}_checkpoint_epoch_{epoch+1}.pth'
+            )
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_loss,
-                'val_metrics': val_metrics,
-                'training_history': training_history
-            }, 'models/lung_classifier_best.pth')
+                'scheduler_state_dict': scheduler.state_dict(),
+                'best_accuracy': best_accuracy,
+                'training_history': training_history,
+                'condition': current_condition,
+                'condition_idx': args.condition_idx
+            }, checkpoint_path)
+            print(f"📦 Saved checkpoint for {current_condition} at epoch {epoch+1}")
 
-    print(f"\n🎉 Training completed! Best val loss: {best_val_loss:.4f}")
-    trainer.save_model("models/lung_classifier_final.pth")
+    final_model_path = f"models/lung_classifier_{current_condition}_final.pth"
+    trainer.save_model(final_model_path)
 
-    with open('models/training_history.json', 'w') as f:
-        json.dump(training_history, f, indent=2)
-
-    return training_history
+    history_path = os.path.join(condition_checkpoint_dir, f'training_history_{current_condition}.json')
+    with open(history_path, 'w') as f:
+        json.dump({
+            'condition': current_condition,
+            'condition_idx': args.condition_idx,
+            'history': training_history,
+            'best_accuracy': best_accuracy
+        }, f, indent=2)
+    print(f"\n🎉 Training completed for {current_condition}!")
+    print(f"Best accuracy: {best_accuracy:.4f}")
+    print(f"Model saved as: {final_model_path}")
+    print(f"Training history saved as: {history_path}")
+    return best_accuracy
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train XightMD Lung Classifier')
@@ -336,6 +301,8 @@ if __name__ == "__main__":
     parser.add_argument('--checkpoint-freq', type=int, default=1, help='Save checkpoint every N epochs')
     parser.add_argument('--resume-checkpoint', type=str, help='Path to checkpoint file to resume training from')
     parser.add_argument('--verbose', action='store_true', help='Print detailed metrics')
+    parser.add_argument('--condition-idx', type=int, help='Index of condition to focus on')
+    parser.add_argument('--early-stopping-patience', type=int, default=5, help='Early stopping patience')
 
     args = parser.parse_args()
     train_model(args)
