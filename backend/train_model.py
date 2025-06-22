@@ -80,11 +80,30 @@ class NIHChestXrayDataset(Dataset):
 
 def calculate_metrics(targets, predictions):
     metrics = {}
+
+    print("\nDEBUG METRICS INFO:")
+    print(f"Targets shape: {targets.shape}")
+    print(f"Predictions shape: {predictions.shape}")
+    print(f"Sample of targets:\n{targets[:5]}")
+    print(f"Sample of predictions:\n{predictions[:5]}")
+    print(f"Unique values in targets: {np.unique(targets)}")
+    print(f"Unique values in predictions: {np.unique(predictions)}")
+
     predictions_binary = (predictions > 0.5).astype(int)
+    print(f"Unique values after thresholding: {np.unique(predictions_binary)}")
+
+    positive_samples = np.sum(targets, axis=0)
+    print(f"Positive samples per class: {positive_samples}")
+
     metrics['hamming_loss'] = hamming_loss(targets, predictions_binary)
     metrics['avg_precision'] = average_precision_score(targets, predictions, average='macro')
     metrics['f1_macro'] = f1_score(targets, predictions_binary, average='macro')
     metrics['f1_micro'] = f1_score(targets, predictions_binary, average='micro')
+
+    print("\nCalculated metrics:")
+    for metric_name, value in metrics.items():
+        print(f"{metric_name}: {value}")
+
     return metrics
 
 def train_model(args):
@@ -107,6 +126,12 @@ def train_model(args):
         print(f"❌ Error loading dataset: {e}")
         print("💡 Make sure you have internet connection and HuggingFace access")
         return
+
+    # After loading the dataset
+    print("\nDEBUG: Checking first sample from dataset")
+    first_sample = next(iter(dataset['train']))
+    print("Available keys:", first_sample.keys())
+    print("Label values:", {k: v for k, v in first_sample.items() if k in LABEL_MAPPING})
 
     checkpoint_dir = 'models/checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -189,11 +214,20 @@ def train_model(args):
         batch_images = []
         batch_labels = []
 
+        debug_labels_sum = 0
+        debug_predictions_sum = 0
+
         progress_bar = tqdm(total=samples_per_epoch, desc=f"Training Epoch {epoch+1}")
 
         while processed_samples < samples_per_epoch:
             try:
                 item = next(train_iter)
+
+                if processed_samples < 5:
+                    print(f"\nDEBUG Sample {processed_samples} raw labels:")
+                    for k, v in item.items():
+                        if k in label_mapping:
+                            print(f"{k}: {v}")
 
                 image = item['image']
                 if image.mode != 'RGB':
@@ -201,21 +235,18 @@ def train_model(args):
                 image_tensor = trainer.transform(image)
 
                 labels = torch.zeros(len(LABELS), dtype=torch.float32)
-                label_mapping = {
-                    'Atelectasis': 'Atelectasis', 'Cardiomegaly': 'Cardiomegaly',
-                    'Consolidation': 'Consolidation', 'Edema': 'Edema',
-                    'Effusion': 'Effusion', 'Emphysema': 'Emphysema',
-                    'Fibrosis': 'Fibrosis', 'Hernia': 'Hernia',
-                    'Infiltration': 'Infiltration', 'Mass': 'Mass',
-                    'Nodule': 'Nodule', 'Pleural_Thickening': 'Pleural Thickening',
-                    'Pneumonia': 'Pneumonia', 'Pneumothorax': 'Pneumothorax'
-                }
-
+                label_assignments = []
                 for nih_label, our_label in label_mapping.items():
                     if item.get(nih_label, 0) == 1:
                         if our_label in LABELS:
                             label_idx = LABELS.index(our_label)
                             labels[label_idx] = 1.0
+                            label_assignments.append(f"{nih_label} -> {our_label}")
+
+                if processed_samples < 5:
+                    print(f"Label assignments for sample {processed_samples}:")
+                    print("\n".join(label_assignments))
+                    print(f"Final label tensor: {labels}")
 
                 batch_images.append(image_tensor)
                 batch_labels.append(labels)
@@ -225,8 +256,15 @@ def train_model(args):
                     images_batch = torch.stack(batch_images).to(device)
                     labels_batch = torch.stack(batch_labels).to(device)
 
+                    print(f"\nDEBUG Batch stats:")
+                    print(f"Batch labels sum: {torch.sum(labels_batch)}")
+                    print(f"Batch labels non-zero: {torch.nonzero(labels_batch).shape}")
+
                     optimizer.zero_grad()
                     outputs = model(images_batch)
+
+                    print(f"Batch predictions > 0.5: {torch.sum(outputs > 0.5)}")
+
                     loss = criterion(outputs, labels_batch)
                     loss.backward()
                     optimizer.step()
@@ -234,18 +272,30 @@ def train_model(args):
                     train_loss += loss.item()
                     train_preds.append(outputs.detach().cpu().numpy())
                     train_targets.append(labels_batch.cpu().numpy())
+
+                    debug_labels_sum += torch.sum(labels_batch).item()
+                    debug_predictions_sum += torch.sum(outputs > 0.5).item()
+
                     batch_images = []
                     batch_labels = []
                     progress_bar.update(args.batch_size)
-                    progress_bar.set_postfix({'Loss': f'{loss.item():.4f}'})
+                    progress_bar.set_postfix({
+                        'Loss': f'{loss.item():.4f}',
+                        'Pos Labels': f'{debug_labels_sum}',
+                        'Pos Preds': f'{debug_predictions_sum}'
+                    })
 
             except StopIteration:
                 train_iter = iter(train_dataset_stream)
             except Exception as e:
-                print(f"⚠️  Skipping sample due to error: {e}")
+                print(f"⚠️  Error in training loop: {str(e)}")
                 continue
 
         progress_bar.close()
+
+        print("\nDEBUG END OF EPOCH STATS:")
+        print(f"Total positive labels: {debug_labels_sum}")
+        print(f"Total positive predictions: {debug_predictions_sum}")
 
         if batch_images:
             images_batch = torch.stack(batch_images).to(device)
@@ -411,3 +461,4 @@ if __name__ == "__main__":
     print(f"⚡ Fast training without storage requirements")
     
     train_model(args)
+    print("🚀 Training started...")
