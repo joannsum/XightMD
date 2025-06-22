@@ -1,413 +1,232 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+import torchvision.models as models
+from torchvision import transforms
+from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
-from utils.lung_classifier import LungClassifierTrainer, LungDiseaseClassifier, LABELS
-import argparse
-import os
-from PIL import Image
 import numpy as np
-from sklearn.metrics import roc_auc_score, average_precision_score, hamming_loss, f1_score
-import pandas as pd
+from sklearn.metrics import f1_score
 from tqdm import tqdm
-import json
-import re
+from PIL import Image
 
-def extract_epoch_from_checkpoint(checkpoint_path):
-    try:
-        match = re.search(r'epoch_(\d+)\.pth$', checkpoint_path)
-        if match:
-            return int(match.group(1))
-        return None
-    except Exception:
-        return None
+# Simple label list - 14 conditions (no "No Finding" for now)
+LABELS = [
+    'Atelectasis', 'Cardiomegaly', 'Consolidation', 'Edema', 'Effusion',
+    'Emphysema', 'Fibrosis', 'Hernia', 'Infiltration', 'Mass', 'Nodule',
+    'Pleural Thickening', 'Pneumonia', 'Pneumothorax'
+]
 
-class NIHChestXrayDataset(Dataset):
-    def __init__(self, hf_dataset, transform=None, split='train', max_samples=None):
-        self.dataset = hf_dataset
-        self.transform = transform
-        self.split = split
-        self.max_samples = max_samples
+class SimpleLungModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.backbone = models.resnet18(pretrained=True)
+        self.backbone.fc = nn.Linear(self.backbone.fc.in_features, len(LABELS))
+        # NO SIGMOID - BCEWithLogitsLoss handles it
+    
+    def forward(self, x):
+        return self.backbone(x)
 
-        self.label_mapping = {
-            'Atelectasis': 'Atelectasis',
-            'Cardiomegaly': 'Cardiomegaly',
-            'Consolidation': 'Consolidation',
-            'Edema': 'Edema',
-            'Effusion': 'Effusion',
-            'Emphysema': 'Emphysema',
-            'Fibrosis': 'Fibrosis',
-            'Hernia': 'Hernia',
-            'Infiltration': 'Infiltration',
-            'Mass': 'Mass',
-            'Nodule': 'Nodule',
-            'Pleural_Thickening': 'Pleural Thickening',
-            'Pneumonia': 'Pneumonia',
-            'Pneumothorax': 'Pneumothorax'
-        }
-
-        if self.max_samples:
-            print(f"🔄 Using only {self.max_samples} samples for {split}")
-
+class SimpleDataset(Dataset):
+    def __init__(self, max_samples=500):
+        print("Loading dataset...")
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+        
+        # Load dataset
+        dataset = load_dataset("BahaaEldin0/NIH-Chest-Xray-14", trust_remote_code=True)
+        
+        self.data = []
+        count = 0
+        
+        for item in dataset['train']:
+            self.data.append(item)
+            count += 1
+            if count >= max_samples:
+                break
+        
+        print(f"Loaded {len(self.data)} samples")
+        
+        # Check data quality
+        self._check_data()
+    
+    def _check_data(self):
+        print("Checking data quality...")
+        total_labels = 0
+        
+        for i, item in enumerate(self.data[:50]):
+            labels = item.get('label', [])
+            if labels:
+                total_labels += len(labels)
+                if i < 5:  # Print first 5
+                    print(f"Sample {i}: {labels}")
+        
+        print(f"Average labels per sample: {total_labels/50:.2f}")
+    
     def __len__(self):
-        if self.max_samples:
-            return min(self.max_samples, len(self.dataset))
-        return len(self.dataset)
-
+        return len(self.data)
+    
     def __getitem__(self, idx):
         try:
-            item = self.dataset[idx]
+            item = self.data[idx]
+            
+            # Process image
             image = item['image']
             if image.mode != 'RGB':
                 image = image.convert('RGB')
-                    
-            if self.transform:
-                image = self.transform(image)
-                labels = torch.zeros(len(LABELS), dtype=torch.float32)
-
-            for nih_label, our_label in self.label_mapping.items():
-                    if item.get(nih_label, 0) == 1:
-                        if our_label in LABELS:
-                            label_idx = LABELS.index(our_label)
-                            labels[label_idx] = 1.0
-                    
+            image = self.transform(image)
+            
+            # Process labels
+            labels = torch.zeros(len(LABELS))
+            label_list = item.get('label', [])
+            
+            for disease in label_list:
+                disease = disease.strip()
+                if disease in LABELS:
+                    idx = LABELS.index(disease)
+                    labels[idx] = 1.0
+                elif disease == 'Pleural_Thickening':
+                    idx = LABELS.index('Pleural Thickening')
+                    labels[idx] = 1.0
+            
             return image, labels
+            
         except Exception as e:
-            print(f"⚠️  Error loading sample {idx}: {e}")
-            dummy_image = torch.zeros(3, 224, 224)
-            dummy_labels = torch.zeros(len(LABELS), dtype=torch.float32)
-            return dummy_image, dummy_labels
+            print(f"Error in sample {idx}: {e}")
+            return torch.zeros(3, 224, 224), torch.zeros(len(LABELS))
 
-def calculate_metrics(targets, predictions):
-    metrics = {}
-    predictions_binary = (predictions > 0.5).astype(int)
-    metrics['hamming_loss'] = hamming_loss(targets, predictions_binary)
-    metrics['avg_precision'] = average_precision_score(targets, predictions, average='macro')
-    metrics['f1_macro'] = f1_score(targets, predictions_binary, average='macro')
-    metrics['f1_micro'] = f1_score(targets, predictions_binary, average='micro')
-    return metrics
-
-def train_model(args):
-    print("🏥 Loading NIH Chest X-ray 14 dataset (streaming mode)...")
-    try:
-        dataset = load_dataset(
-            "BahaaEldin0/NIH-Chest-Xray-14",
-            streaming=True,
-            trust_remote_code=True
-            )
-
-        print(f"✅ Dataset loaded in streaming mode!")
-        print(f"🌐 Data will be streamed from HuggingFace servers")
-
-        train_dataset_stream = dataset['train']
-
-        print(f"📊 Using streaming mode with limited samples per epoch")
-
-    except Exception as e:
-        print(f"❌ Error loading dataset: {e}")
-        print("💡 Make sure you have internet connection and HuggingFace access")
-        return
-
-    checkpoint_dir = 'models/checkpoints'
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    checkpoint_frequency = args.checkpoint_freq
-    trainer = LungClassifierTrainer()
-
-    samples_per_epoch = args.samples_per_epoch
-    val_samples = args.val_samples
-
-    print(f"🔄 Training with {samples_per_epoch} samples per epoch")
-    print(f"🔄 Validation with {val_samples} samples")
-
-    device = trainer.device
-    model = trainer.model
-
-    criterion = nn.BCELoss()
-
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=args.learning_rate,
-        weight_decay=args.weight_decay
-    )
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', patience=3, factor=0.5
-    )
+def test_basic_training():
+    print("🚀 TESTING BASIC TRAINING FROM SCRATCH")
+    print("="*50)
     
-    start_epoch = 0
-    best_val_loss = float('inf')
-    training_history = []
-    if args.resume_checkpoint:
-        print(f"📂 Loading checkpoint from: {args.resume_checkpoint}")
-        try:
-            checkpoint = torch.load(args.resume_checkpoint, map_location=device)
-            model.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
-            filename_epoch = extract_epoch_from_checkpoint(args.resume_checkpoint)
-            if filename_epoch is not None:
-                start_epoch = filename_epoch
-                print(f"✅ Starting from epoch {start_epoch} (based on filename)")
-            else:
-                start_epoch = checkpoint['epoch']
-                print(f"✅ Starting from epoch {start_epoch} (based on checkpoint data)")
-
-            best_val_loss = checkpoint.get('val_loss', float('inf'))
-            training_history = checkpoint.get('training_history', [])
-
-            print(f"📈 Previous best val loss: {best_val_loss:.4f}")
-
-            checkpoint_epoch = checkpoint.get('epoch')
-            if filename_epoch and checkpoint_epoch and filename_epoch != checkpoint_epoch:
-                print(f"⚠️  Warning: Checkpoint filename indicates epoch {filename_epoch} "
-                      f"but checkpoint data shows epoch {checkpoint_epoch}")
-
-        except Exception as e:
-            print(f"❌ Error loading checkpoint: {e}")
-            return
-
-    total_epochs = args.epochs + start_epoch
-    print(f"🎯 Will train until epoch {total_epochs}")
-
-    print(f"🚀 Starting training for {args.epochs} epochs...")
-    print(f"🔧 Device: {device}")
-    print(f"🔧 Batch size: {args.batch_size}")
-    print(f"🔧 Learning rate: {args.learning_rate}")
-    print(f"🌐 Streaming mode: No local storage used!")
-
-    for epoch in range(start_epoch, total_epochs):
-        print(f"\n🔄 Epoch {epoch+1}/{total_epochs}")
-
+    # Create dataset
+    dataset = SimpleDataset(max_samples=200)  # Very small for testing
+    
+    # Split
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+    
+    # Loaders
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False)
+    
+    # Model
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = SimpleLungModel().to(device)
+    
+    # Training setup
+    criterion = nn.BCEWithLogitsLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    
+    print(f"Device: {device}")
+    print(f"Train samples: {len(train_dataset)}")
+    print(f"Val samples: {len(val_dataset)}")
+    
+    # Test one batch first
+    print("\nTesting one batch...")
+    model.train()
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
+        
+        print(f"Batch shape: {images.shape}")
+        print(f"Labels shape: {labels.shape}")
+        print(f"Positive labels: {labels.sum().item()}")
+        
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        
+        print(f"Output shape: {outputs.shape}")
+        print(f"Loss: {loss.item():.4f}")
+        
+        # Check if we can backward
+        loss.backward()
+        print("✅ Backward pass successful")
+        
+        break
+    
+    # Train for a few epochs
+    print("\nStarting training...")
+    
+    for epoch in range(3):
+        print(f"\nEpoch {epoch+1}")
+        
+        # Train
         model.train()
-        train_loss = 0.0
-        train_preds = []
-        train_targets = []
-
-        train_iter = iter(train_dataset_stream)
-        processed_samples = 0
-        batch_images = []
-        batch_labels = []
-
-        progress_bar = tqdm(total=samples_per_epoch, desc=f"Training Epoch {epoch+1}")
-
-        while processed_samples < samples_per_epoch:
-            try:
-                item = next(train_iter)
-
-                image = item['image']
-                if image.mode != 'RGB':
-                    image = image.convert('RGB')
-                image_tensor = trainer.transform(image)
-
-                labels = torch.zeros(len(LABELS), dtype=torch.float32)
-                label_mapping = {
-                    'Atelectasis': 'Atelectasis', 'Cardiomegaly': 'Cardiomegaly',
-                    'Consolidation': 'Consolidation', 'Edema': 'Edema',
-                    'Effusion': 'Effusion', 'Emphysema': 'Emphysema',
-                    'Fibrosis': 'Fibrosis', 'Hernia': 'Hernia',
-                    'Infiltration': 'Infiltration', 'Mass': 'Mass',
-                    'Nodule': 'Nodule', 'Pleural_Thickening': 'Pleural Thickening',
-                    'Pneumonia': 'Pneumonia', 'Pneumothorax': 'Pneumothorax'
-                }
-
-                for nih_label, our_label in label_mapping.items():
-                    if item.get(nih_label, 0) == 1:
-                        if our_label in LABELS:
-                            label_idx = LABELS.index(our_label)
-                            labels[label_idx] = 1.0
-
-                batch_images.append(image_tensor)
-                batch_labels.append(labels)
-                processed_samples += 1
-
-                if len(batch_images) == args.batch_size:
-                    images_batch = torch.stack(batch_images).to(device)
-                    labels_batch = torch.stack(batch_labels).to(device)
-
-                    optimizer.zero_grad()
-                    outputs = model(images_batch)
-                    loss = criterion(outputs, labels_batch)
-                    loss.backward()
-                    optimizer.step()
-
-                    train_loss += loss.item()
-                    train_preds.append(outputs.detach().cpu().numpy())
-                    train_targets.append(labels_batch.cpu().numpy())
-                    batch_images = []
-                    batch_labels = []
-                    progress_bar.update(args.batch_size)
-                    progress_bar.set_postfix({'Loss': f'{loss.item():.4f}'})
-
-            except StopIteration:
-                train_iter = iter(train_dataset_stream)
-            except Exception as e:
-                print(f"⚠️  Skipping sample due to error: {e}")
-                continue
-
-        progress_bar.close()
-
-        if batch_images:
-            images_batch = torch.stack(batch_images).to(device)
-            labels_batch = torch.stack(batch_labels).to(device)
-
+        train_loss = 0
+        all_preds = []
+        all_targets = []
+        
+        for images, labels in tqdm(train_loader, desc="Training"):
+            images, labels = images.to(device), labels.to(device)
+            
             optimizer.zero_grad()
-            outputs = model(images_batch)
-            loss = criterion(outputs, labels_batch)
+            outputs = model(images)
+            loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
-
+            
             train_loss += loss.item()
-            train_preds.append(outputs.detach().cpu().numpy())
-            train_targets.append(labels_batch.cpu().numpy())
-
+            
+            # Get predictions
+            preds = torch.sigmoid(outputs)
+            all_preds.append(preds.detach().cpu().numpy())
+            all_targets.append(labels.cpu().numpy())
+        
+        # Calculate metrics
+        all_preds = np.vstack(all_preds)
+        all_targets = np.vstack(all_targets)
+        
+        # Try different thresholds
+        best_f1 = 0
+        best_thresh = 0.5
+        
+        for thresh in [0.1, 0.2, 0.3, 0.4, 0.5]:
+            pred_binary = (all_preds > thresh).astype(int)
+            f1 = f1_score(all_targets, pred_binary, average='macro', zero_division=0)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_thresh = thresh
+        
+        print(f"Train Loss: {train_loss/len(train_loader):.4f}")
+        print(f"Best F1: {best_f1:.4f} (threshold: {best_thresh})")
+        
+        # Quick validation
         model.eval()
-        val_loss = 0.0
         val_preds = []
         val_targets = []
-
-        val_iter = iter(train_dataset_stream)
-        val_processed = 0
-
+        
         with torch.no_grad():
-            while val_processed < val_samples:
-                try:
-                    item = next(val_iter)
-
-                    image = item['image'].convert('RGB')
-                    image_tensor = trainer.transform(image).unsqueeze(0).to(device)
-
-                    labels = torch.zeros(1, len(LABELS), dtype=torch.float32).to(device)
-                    for nih_label, our_label in label_mapping.items():
-                        if item.get(nih_label, 0) == 1 and our_label in LABELS:
-                            label_idx = LABELS.index(our_label)
-                            labels[0, label_idx] = 1.0
-
-                    outputs = model(image_tensor)
-                    loss = criterion(outputs, labels)
-
-                    val_loss += loss.item()
-                    val_preds.append(outputs.cpu().numpy())
-                    val_targets.append(labels.cpu().numpy())
-                    val_processed += 1
-
-                except (StopIteration, Exception):
-                    val_iter = iter(train_dataset_stream)
-                    continue
-
-        num_batches = len(train_preds)
-        train_loss /= max(num_batches, 1)
-        val_loss /= max(val_processed, 1)
-
-        train_preds_np = np.concatenate(train_preds)
-        train_targets_np = np.concatenate(train_targets)
-        val_preds_np = np.concatenate(val_preds)
-        val_targets_np = np.concatenate(val_targets)
-
-        train_metrics = calculate_metrics(train_targets_np, train_preds_np)
-        val_metrics = calculate_metrics(val_targets_np, val_preds_np)
-        scheduler.step(val_loss)
-
-        epoch_stats = {
-            'epoch': epoch + 1,
-            'train_loss': train_loss,
-            'val_loss': val_loss,
-            'train_metrics': train_metrics,
-            'val_metrics': val_metrics,
-            'learning_rate': optimizer.param_groups[0]['lr'],
-            'samples_processed': processed_samples
-        }
-        training_history.append(epoch_stats)
-
-        print(f"\nEpoch {epoch+1}/{args.epochs}")
-        print(f"Train Loss: {train_loss:.4f} | Train Hamming Loss: {train_metrics['hamming_loss']:.4f}")
-        print(f"Val Loss: {val_loss:.4f} | Val Hamming Loss: {val_metrics['hamming_loss']:.4f}")
-        print(f"Samples: {processed_samples} | LR: {optimizer.param_groups[0]['lr']:.6f}")
-
-        if args.verbose:
-            print("\nDetailed Metrics:")
-            print("   Train Metrics:")
-            print(f"      Avg Precision: {train_metrics['avg_precision']:.4f}")
-            print(f"      F1 (macro): {train_metrics['f1_macro']:.4f}")
-            print(f"      F1 (micro): {train_metrics['f1_micro']:.4f}")
-            print("   Val Metrics:")
-            print(f"      Avg Precision: {val_metrics['avg_precision']:.4f}")
-            print(f"      F1 (macro): {val_metrics['f1_macro']:.4f}")
-            print(f"      F1 (micro): {val_metrics['f1_micro']:.4f}")
-
-        if (epoch + 1) % checkpoint_frequency == 0:
-            checkpoint_path = os.path.join(
-                checkpoint_dir,
-                f'lung_classifier_checkpoint_epoch_{epoch+1}.pth'
-            )
-            print(f"💾 Saving periodic checkpoint to {checkpoint_path}")
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'val_loss': val_loss,
-                'val_metrics': val_metrics,
-                'training_history': training_history
-            }, checkpoint_path)
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            print(f"💾 Saving best model (Val Loss: {val_loss:.4f})")
-
-            os.makedirs('models', exist_ok=True)
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_loss,
-                'val_metrics': val_metrics,
-                'training_history': training_history
-            }, 'models/lung_classifier_best.pth')
-
-    print(f"\n🎉 Training completed!")
-    print(f"💯 Best validation loss: {best_val_loss:.4f}")
-    print(f"🌐 No local storage used - everything streamed!")
-
-    trainer.save_model("models/lung_classifier_final.pth")
-
-    with open('models/training_history.json', 'w') as f:
-        json.dump(training_history, f, indent=2)
-
-    print(f"📁 Models saved to models/ directory")
-    return training_history
+            for images, labels in val_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                preds = torch.sigmoid(outputs)
+                
+                val_preds.append(preds.cpu().numpy())
+                val_targets.append(labels.cpu().numpy())
+        
+        if val_preds:
+            val_preds = np.vstack(val_preds)
+            val_targets = np.vstack(val_targets)
+            
+            val_pred_binary = (val_preds > best_thresh).astype(int)
+            val_f1 = f1_score(val_targets, val_pred_binary, average='macro', zero_division=0)
+            
+            print(f"Val F1: {val_f1:.4f}")
+        
+        # Debug info
+        print(f"Prediction stats: min={all_preds.min():.3f}, max={all_preds.max():.3f}, mean={all_preds.mean():.3f}")
+    
+    print("\n✅ Basic training test complete!")
+    
+    # Save if it worked
+    if best_f1 > 0.1:
+        torch.save(model.state_dict(), 'simple_lung_model.pth')
+        print(f"✅ Saved working model with F1: {best_f1:.4f}")
+    else:
+        print("❌ Model still not learning properly")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Train XightMD Lung Classifier (Streaming)')
-    parser.add_argument('--epochs', type=int, default=5, help='Number of epochs')
-    parser.add_argument('--batch-size', type=int, default=8, help='Batch size')
-    parser.add_argument('--learning-rate', type=float, default=0.001, help='Learning rate')
-    parser.add_argument('--weight-decay', type=float, default=1e-4, help='Weight decay')
-    parser.add_argument('--samples-per-epoch', type=int, default=1000, help='Samples per epoch (streaming)')
-    parser.add_argument('--val-samples', type=int, default=200, help='Validation samples (streaming)')
-    parser.add_argument(
-        '--checkpoint-freq',
-        type=int,
-        default=1,
-        help='Save checkpoint every N epochs'
-    )
-    parser.add_argument(
-        '--resume-checkpoint',
-        type=str,
-        help='Path to checkpoint file to resume training from'
-    )
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Print detailed metrics for each epoch'
-    )
-
-    args = parser.parse_args()
-
-    print(f"🌐 STREAMING MODE: No local download!")
-    if args.resume_checkpoint:
-        print(f"📂 Will resume training from: {args.resume_checkpoint}")
-    print(f"📊 Will process {args.samples_per_epoch} samples per epoch")
-    print(f"⚡ Fast training without storage requirements")
-    
-    train_model(args)
+    test_basic_training()
