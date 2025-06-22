@@ -19,14 +19,31 @@ class NIHChestXrayDataset(Dataset):
         self.dataset = hf_dataset
         self.transform = transform
         self.split = split
-        self.max_samples = max_samples if max_samples else len(hf_dataset)
-        print(f"📊 {split} dataset size: {self.max_samples}")
+
+        # FIXED: Load data into memory properly
+        print(f"🔄 Loading {split} data into memory...")
+        self.data = []
+        count = 0
+
+        # Convert streaming dataset to list
+        if hasattr(hf_dataset, '__iter__'):
+            for item in hf_dataset:
+                self.data.append(item)
+                count += 1
+                if max_samples and count >= max_samples:
+                    break
+        else:
+            # If it's already a list/dataset
+            self.data = list(hf_dataset)[:max_samples] if max_samples else list(hf_dataset)
+
+        print(f"✅ Loaded {len(self.data)} samples")
+
     def __len__(self):
-        return self.max_samples
+        return len(self.data)
 
     def __getitem__(self, idx):
         try:
-            item = self.dataset[idx]
+            item = self.data[idx]
             image = item['image']
             if image.mode != 'RGB':
                 image = image.convert('RGB')
@@ -124,8 +141,8 @@ def train_model(args):
     trainer = LungClassifierTrainer()
     
     train_dataset = NIHChestXrayDataset(
-        dataset['train'], 
-        transform=trainer.transform, 
+        dataset['train'],
+        transform=trainer.transform,
         max_samples=args.max_train_samples
     )
     
@@ -137,16 +154,16 @@ def train_model(args):
     )
     
     train_loader = DataLoader(
-        train_dataset, 
-        batch_size=args.batch_size, 
-        shuffle=True, 
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
         num_workers=0
     )
     
     val_loader = DataLoader(
-        val_dataset, 
-        batch_size=args.batch_size, 
-        shuffle=False, 
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
         num_workers=0
     )
     
@@ -154,9 +171,8 @@ def train_model(args):
     print(f"📊 Validation samples: {len(val_dataset)}")
     
     device = trainer.device
-    model = trainer.model
+    model = LungDiseaseClassifier(num_classes=len(LABELS), pretrained=True)
     model = model.to(device)
-    
     model.backbone.classifier = nn.Sequential(
         nn.Dropout(0.5),
         nn.Linear(model.backbone.classifier[1].in_features, len(LABELS))
@@ -219,7 +235,6 @@ def train_model(args):
         val_loss, val_metrics = validate_model(model, val_loader, criterion, device)
 
         scheduler.step(val_metrics['f1_macro'])
-
         print(f"📈 Train Loss: {train_loss/len(train_loader):.4f}")
         print(f"📈 Train F1 (macro): {train_metrics['f1_macro']:.4f}")
         print(f"📉 Val Loss: {val_loss:.4f}")

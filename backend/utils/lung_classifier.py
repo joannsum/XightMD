@@ -18,18 +18,14 @@ LABELS = [
 ]
 
 class LungDiseaseClassifier(nn.Module):
-
     def __init__(self, num_classes: int = 15, pretrained: bool = True):
         super(LungDiseaseClassifier, self).__init__()
-        # Use DenseNet-121 as requested
         self.backbone = models.densenet121(pretrained=pretrained)
         
-        # Replace classifier for multi-label classification
         num_features = self.backbone.classifier.in_features
         self.backbone.classifier = nn.Sequential(
             nn.Dropout(0.5),
-            nn.Linear(num_features, num_classes),
-            nn.Sigmoid()  # For multi-label classification
+            nn.Linear(num_features, num_classes)
         )
         
     def forward(self, x):
@@ -88,6 +84,7 @@ class LungClassifierTrainer:
         
         with torch.no_grad():
             predictions = self.model(image_tensor)
+            predictions = torch.sigmoid(predictions)  # Apply sigmoid to get probabilities
             predictions = predictions.cpu().numpy()[0]
         
         # Create result dictionary with confidence scores
