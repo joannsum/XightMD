@@ -1,5 +1,6 @@
 # Python 3.12.10 compatible requirements
 
+reportlab==4.4.2
 # Agent Framework
 uagents==0.22.5
 
