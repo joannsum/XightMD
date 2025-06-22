@@ -9,9 +9,6 @@ from PIL import Image
 import base64
 import io
 
-# Remove the local classifier import since we're using Modal
-# from utils.lung_classifier import LungClassifierTrainer, LABELS
-
 # Message models for agent communication
 class ImageAnalysisRequest(Model):
     image_data: str  # base64 encoded image

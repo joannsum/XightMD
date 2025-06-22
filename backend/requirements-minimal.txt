@@ -1,6 +1,7 @@
 aiohttp==3.12.13
 # Core agent framework
 uagents==0.22.5
+reportlab==4.4.2
 
 # AI API client (for Claude fallback if needed)
 anthropic==0.54.0

@@ -44,6 +44,8 @@ AGENT_PORTS = {
     "qa": 9003
 }
 
+MODAL_ENDPOINT = "https://joannsum--xightmd-simple-predict-lung-conditions.modal.run"
+
 # Store completed analysis results
 analysis_results = {}
 
@@ -55,59 +57,31 @@ class APIServer:
         self.initialize_model()
     
     def initialize_model(self):
-        """Initialize the lung classifier model"""
+        """Initialize Modal connection instead of local model"""
         try:
-            logger.info("🤖 Initializing lung disease classifier...")
+            logger.info("🤖 Connecting to Modal service...")
             
-            # Check if model file exists
-            model_path = os.path.join(backend_dir, 'models', 'lung_classifier_best.pth')
-            if not os.path.exists(model_path):
-                logger.warning(f"⚠️ Model file not found at {model_path}")
-                logger.info("Available files in models directory:")
-                models_dir = os.path.join(backend_dir, 'models')
-                if os.path.exists(models_dir):
-                    for file in os.listdir(models_dir):
-                        logger.info(f"  - {file}")
-                else:
-                    logger.warning(f"Models directory does not exist: {models_dir}")
-                return
+            # Test Modal connection instead of loading local model
+            import asyncio
+            asyncio.create_task(self.test_modal_connection())
             
-            # Import and initialize the lung classifier
-            # from utils.lung_classifier import LungClassifierTrainer
-            
-            # self.lung_classifier = LungClassifierTrainer()
-            
-            # Test that the model can be loaded with a simple test
-            # logger.info("🧪 Testing model with dummy prediction...")
-            
-            # Create a simple test image
-            import tempfile
-            from PIL import Image
-            
-            test_image = Image.new('RGB', (224, 224), color='gray')
-            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
-                test_image.save(temp_file.name)
-                temp_path = temp_file.name
-            
-            try:
-                test_predictions = self.lung_classifier.predict(temp_path)
-                if test_predictions and isinstance(test_predictions, dict):
-                    self.model_loaded = True
-                    logger.info(f"✅ Lung classifier model loaded successfully! Found {len(test_predictions)} prediction classes")
-                else:
-                    logger.warning("⚠️ Model loaded but test prediction returned invalid result")
-            finally:
-                # Clean up test file
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
-                
-        except ImportError as e:
-            logger.error(f"❌ Failed to import lung classifier: {e}")
-            logger.info("Make sure utils/lung_classifier.py exists and all dependencies are installed")
         except Exception as e:
-            logger.error(f"❌ Failed to initialize lung classifier: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"❌ Failed to connect to Modal: {e}")
+            self.model_loaded = False
+
+    # async def test_modal_connection(self):
+    #     """Test Modal service availability"""
+    #     try:
+    #         async with httpx.AsyncClient() as client:
+    #             response = await client.get("https://joannsum--xightmd-simple-health.modal.run", timeout=10)
+    #             if response.status_code == 200:
+    #                 self.model_loaded = True
+    #                 logger.info("✅ Modal service connected successfully!")
+    #             else:
+    #                 logger.warning(f"⚠️ Modal service returned status {response.status_code}")
+    #     except Exception as e:
+    #         logger.error(f"❌ Modal connection failed: {e}")
+    #         self.model_loaded = False
     
     def setup_routes(self):
         """Setup API routes"""
@@ -332,7 +306,7 @@ class APIServer:
             "message": "XightMD Backend API",
             "version": "1.0.0",
             "status": "running",
-            "model_status": "loaded" if self.model_loaded else "not_loaded",
+            "model_status": "loaded" if api_server.model_loaded else "not_loaded",
             "endpoints": {
                 "health": "/api/health",
                 "analyze": "/api/analyze",
@@ -345,100 +319,110 @@ class APIServer:
 
 
     async def analyze_with_lung_classifier(self, image_data: str, image_format: str, request_id: str, filename: str = None) -> Dict[str, Any]:
-        """Use lung classifier for analysis"""
+        """Use Modal service for analysis instead of local classifier"""
         start_time = datetime.now()
         
         try:
-            if not self.model_loaded or not self.lung_classifier:
-                logger.warning("🤖 Lung classifier not available, using fallback")
-                return self.create_fallback_result(
-                    image_data, image_format, request_id, 
-                    "Lung classifier model not loaded"
-                )
+            logger.info(f"🤖 Running analysis via Modal service...")
             
-            logger.info(f"🤖 Running lung disease classification...")
-            
-            # Decode and save image temporarily
-            import tempfile
-            from PIL import Image
-            import io
-            
-            image_bytes = base64.b64decode(image_data)
-            image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-            
-            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
-                image.save(temp_file.name, quality=95)
-                temp_path = temp_file.name
-            
-            try:
-                # Get predictions from the actual model
-                predictions = self.lung_classifier.predict(temp_path)
-                significance = self.lung_classifier.get_statistical_significance(predictions)
-                
-                # Calculate metrics
-                urgency_score = self.calculate_urgency(significance)
-                confidence_score = self.calculate_overall_confidence(predictions)
-                critical_findings = self.identify_critical_findings(significance)
-                
-                # Generate structured report
-                report = self.generate_report(significance, predictions, urgency_score)
-                
-                processing_time = (datetime.now() - start_time).total_seconds() * 1000
-                
-                logger.info(f"✅ Analysis complete - Urgency: {urgency_score}, Confidence: {confidence_score:.2f}, Time: {processing_time:.0f}ms")
-                
-                # Create final result
-                result = {
-                    'id': f'analysis-{request_id[:8]}',
-                    'timestamp': datetime.now().isoformat(),
-                    'urgency': urgency_score,
-                    'confidence': confidence_score,
-                    'findings': [
-                        f.split(' (confidence:')[0] for f in critical_findings
-                    ] + [
-                        condition for condition, data in significance.items() 
-                        if data['significant'] and data['confidence'] > 0.5
-                    ][:5],  # Limit to top 5 findings
-                    'report': report,
-                    'image': f'data:{image_format};base64,{image_data[:100]}...',  # Truncated for response
-                    'processing_details': {
-                        'model_predictions': {k: round(v, 3) for k, v in predictions.items()},
-                        'statistical_significance': {
-                            k: {
-                                'significant': v['significant'],
-                                'confidence': round(v['confidence'], 3),
-                                'confidence_level': v['confidence_level']
-                            } for k, v in significance.items() if v['significant']
-                        },
-                        'critical_findings': critical_findings,
-                        'processing_time_ms': round(processing_time),
-                        'pipeline': ['image_preprocessing', 'lung_classifier', 'report_generator'],
-                        'mode': 'ml_analysis',
-                        'filename': filename,
-                        'model': 'lung_classifier_best.pth'
-                    }
+            # Call Modal instead of local model
+            async with httpx.AsyncClient() as client:
+                payload = {
+                    "image_data": image_data,
+                    "image_format": image_format.split('/')[-1]
                 }
                 
-                # Store result for later retrieval
-                analysis_results[request_id] = result
+                response = await client.post(MODAL_ENDPOINT, json=payload, timeout=60)
                 
-                return result
-                
-            finally:
-                # Clean up temp file
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+                if response.status_code == 200:
+                    modal_result = response.json()
+                    
+                    if modal_result.get("success"):
+                        # Convert Modal result to your existing format
+                        predictions = modal_result["predictions"]
+                        urgency_score = modal_result["urgency"]
+                        confidence_score = modal_result["confidence"]
                         
+                        # Create significance data for your existing methods
+                        significance = self.create_significance_from_modal(predictions)
+                        critical_findings = self.identify_critical_findings(significance)
+                        
+                        # Generate report using your existing logic
+                        report = self.generate_report(significance, predictions, urgency_score)
+                        
+                        processing_time = (datetime.now() - start_time).total_seconds() * 1000
+                        
+                        logger.info(f"✅ Modal analysis complete - Urgency: {urgency_score}, Confidence: {confidence_score:.2f}")
+                        
+                        # Create result in your existing format
+                        result = {
+                            'id': f'analysis-{request_id[:8]}',
+                            'timestamp': datetime.now().isoformat(),
+                            'urgency': urgency_score,
+                            'confidence': confidence_score,
+                            'findings': [
+                                f.split(' (confidence:')[0] for f in critical_findings
+                            ] + [
+                                condition for condition, data in significance.items() 
+                                if data['significant'] and data['confidence'] > 0.5
+                            ][:5],
+                            'report': report,
+                            'image': f'data:{image_format};base64,{image_data[:100]}...',
+                            'processing_details': {
+                                'model_predictions': {k: round(v, 3) for k, v in predictions.items()},
+                                'statistical_significance': {
+                                    k: {
+                                        'significant': v['significant'],
+                                        'confidence': round(v['confidence'], 3),
+                                        'confidence_level': v['confidence_level']
+                                    } for k, v in significance.items() if v['significant']
+                                },
+                                'critical_findings': critical_findings,
+                                'processing_time_ms': round(processing_time),
+                                'pipeline': ['modal_service', 'report_generator'],
+                                'mode': 'modal_analysis',
+                                'filename': filename,
+                                'model': 'modal_service'
+                            }
+                        }
+                        
+                        analysis_results[request_id] = result
+                        return result
+                    else:
+                        raise Exception(f"Modal service error: {modal_result.get('error', 'Unknown error')}")
+                else:
+                    raise Exception(f"Modal service returned status {response.status_code}")
+                            
         except Exception as e:
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
-            logger.error(f"❌ Lung classifier error: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"❌ Modal service error: {e}")
             
             return self.create_fallback_result(
                 image_data, image_format, request_id, 
-                f"Classifier error: {str(e)}", processing_time
+                f"Modal service error: {str(e)}", processing_time
             )
+
+    def create_significance_from_modal(self, predictions: Dict[str, float]) -> Dict[str, Any]:
+        """Convert Modal predictions to significance format for existing methods"""
+        significance = {}
+        
+        for condition, confidence in predictions.items():
+            is_significant = confidence > 0.1
+            
+            if confidence > 0.7:
+                confidence_level = "high"
+            elif confidence > 0.4:
+                confidence_level = "medium"
+            else:
+                confidence_level = "low"
+            
+            significance[condition] = {
+                'significant': is_significant,
+                'confidence': confidence,
+                'confidence_level': confidence_level
+            }
+        
+        return significance
 
     def create_fallback_result(self, image_data: str, image_format: str, request_id: str, error_msg: str, processing_time: float = 500) -> Dict[str, Any]:
         """Create a fallback result when the lung classifier isn't available"""
