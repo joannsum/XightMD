@@ -4,14 +4,13 @@ from datetime import datetime
 import os
 import json
 import asyncio
+import aiohttp
 from PIL import Image
 import base64
 import io
 
-# Import your lung classifier
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.lung_classifier import LungClassifierTrainer, LABELS
+# Remove the local classifier import since we're using Modal
+# from utils.lung_classifier import LungClassifierTrainer, LABELS
 
 # Message models for agent communication
 class ImageAnalysisRequest(Model):
@@ -34,7 +33,9 @@ class ImageAnalysisResponse(Model):
 
 class TriageAgent:
     def __init__(self, agent_address: str = "triage_agent"):
-        # REMOVED enable_wallet parameter
+        # Updated Modal endpoint - use the actual predict endpoint
+        self.modal_endpoint = "https://joannsum--xightmd-simple-predict-lung-conditions.modal.run"
+        
         self.agent = Agent(
             name="triage_agent",
             port=8001,
@@ -42,18 +43,25 @@ class TriageAgent:
             endpoint=["http://localhost:8001/submit"]
         )
         
-        # Initialize the lung classifier
-        print("Initializing lung disease classifier...")
-        self.lung_classifier = LungClassifierTrainer()
+        # Define supported labels (since we removed local classifier)
+        self.labels = [
+            "Atelectasis", "Cardiomegaly", "Consolidation", "Edema",
+            "Effusion", "Emphysema", "Fibrosis", "Hernia",
+            "Infiltration", "Mass", "Nodule", "Pleural_Thickening",
+            "Pneumonia", "Pneumothorax"
+        ]
         
         # Define critical conditions that require immediate attention
         self.critical_conditions = [
             "Pneumothorax",  # Collapsed lung - emergency
             "Pneumonia",     # Infection requiring treatment
-            "Pleural Effusion",  # Fluid in lungs
+            "Effusion",      # Fluid in lungs (updated from "Pleural Effusion")
             "Mass",          # Potential tumor
             "Consolidation"  # Lung tissue filling
         ]
+        
+        print("🔗 Triage Agent configured to use Modal service")
+        print(f"📡 Modal endpoint: {self.modal_endpoint}")
         
         # Setup agent handlers
         self.setup_handlers()
@@ -67,8 +75,8 @@ class TriageAgent:
             ctx.logger.info(f"Received image analysis request: {msg.request_id}")
             
             try:
-                # Process the image
-                result = await self.analyze_image_from_base64(
+                # Process the image using Modal service
+                result = await self.analyze_image_with_modal(
                     msg.image_data, 
                     msg.image_format,
                     msg.request_id
@@ -78,6 +86,7 @@ class TriageAgent:
                 await ctx.send(sender, result)
                 
             except Exception as e:
+                ctx.logger.error(f"Error in image analysis: {e}")
                 error_response = ImageAnalysisResponse(
                     request_id=msg.request_id,
                     predictions={},
@@ -92,56 +101,62 @@ class TriageAgent:
                 )
                 await ctx.send(sender, error_response)
 
-    async def analyze_image_from_base64(self, image_data: str, image_format: str, request_id: str) -> ImageAnalysisResponse:
-        """Analyze X-ray image from base64 data"""
+    async def analyze_image_with_modal(self, image_data: str, image_format: str, request_id: str) -> ImageAnalysisResponse:
+        """Analyze X-ray image using Modal service"""
         start_time = datetime.now()
         
         try:
-            # Decode base64 image
-            image_bytes = base64.b64decode(image_data)
-            image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-            
-            # Save temporarily for processing
-            temp_path = f"/tmp/temp_xray_{request_id}.jpg"
-            image.save(temp_path)
-            
-            try:
-                # Get predictions from lung classifier
-                predictions = self.lung_classifier.predict(temp_path)
+            # Call Modal service
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    "image_data": image_data,
+                    "image_format": image_format
+                }
                 
-                # Calculate statistical significance
-                significance = self.lung_classifier.get_statistical_significance(predictions)
+                print(f"🚀 Calling Modal service for request {request_id}")
                 
-                # Determine urgency and confidence
-                urgency_score = self.calculate_urgency(significance)
-                confidence_score = self.calculate_overall_confidence(predictions)
-                
-                # Identify critical findings
-                critical_findings = self.identify_critical_findings(significance)
-                
-                # Format all findings
-                all_findings = self.format_findings(significance)
-                
-                processing_time = (datetime.now() - start_time).total_seconds() * 1000
-                
-                return ImageAnalysisResponse(
-                    request_id=request_id,
-                    predictions=predictions,
-                    urgency_score=urgency_score,
-                    confidence_score=confidence_score,
-                    critical_findings=critical_findings,
-                    all_findings=all_findings,
-                    statistical_significance=significance,
-                    processing_time_ms=int(processing_time),
-                    timestamp=datetime.now().isoformat()
-                )
-                
-            finally:
-                # Clean up temp file
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                    
+                async with session.post(self.modal_endpoint, json=payload, timeout=30) as response:
+                    if response.status == 200:
+                        modal_result = await response.json()
+                        
+                        if modal_result.get("success", False):
+                            # Extract predictions from Modal response
+                            predictions = modal_result["predictions"]
+                            modal_confidence = modal_result["confidence"]
+                            modal_urgency = modal_result["urgency"]
+                            
+                            # Create significance data for our existing methods
+                            significance = self.create_significance_from_predictions(predictions)
+                            
+                            # Use our existing logic for critical findings and formatting
+                            critical_findings = self.identify_critical_findings(significance)
+                            all_findings = self.format_findings(significance)
+                            
+                            processing_time = (datetime.now() - start_time).total_seconds() * 1000
+                            
+                            print(f"✅ Modal analysis completed for {request_id}")
+                            
+                            return ImageAnalysisResponse(
+                                request_id=request_id,
+                                predictions=predictions,
+                                urgency_score=modal_urgency,
+                                confidence_score=modal_confidence,
+                                critical_findings=critical_findings,
+                                all_findings=all_findings,
+                                statistical_significance=significance,
+                                processing_time_ms=int(processing_time),
+                                timestamp=datetime.now().isoformat()
+                            )
+                        else:
+                            raise Exception(f"Modal service error: {modal_result.get('error', 'Unknown error')}")
+                    else:
+                        raise Exception(f"Modal service returned status {response.status}")
+                        
+        except asyncio.TimeoutError:
+            raise Exception("Modal service timeout")
         except Exception as e:
+            print(f"❌ Modal service call failed: {e}")
+            # Return error response
             processing_time = (datetime.now() - start_time).total_seconds() * 1000
             return ImageAnalysisResponse(
                 request_id=request_id,
@@ -153,8 +168,32 @@ class TriageAgent:
                 statistical_significance={},
                 processing_time_ms=int(processing_time),
                 timestamp=datetime.now().isoformat(),
-                error=str(e)
+                error=f"Modal service error: {str(e)}"
             )
+
+    def create_significance_from_predictions(self, predictions: Dict[str, float]) -> Dict[str, Any]:
+        """Convert Modal predictions to significance format for existing methods"""
+        significance = {}
+        
+        for condition, confidence in predictions.items():
+            # Determine if significant (you can adjust threshold)
+            is_significant = confidence > 0.1
+            
+            # Determine confidence level
+            if confidence > 0.7:
+                confidence_level = "high"
+            elif confidence > 0.4:
+                confidence_level = "medium"
+            else:
+                confidence_level = "low"
+            
+            significance[condition] = {
+                'significant': is_significant,
+                'confidence': confidence,
+                'confidence_level': confidence_level
+            }
+        
+        return significance
 
     def calculate_urgency(self, significance: Dict[str, Any]) -> int:
         """Calculate urgency score from 1 (normal) to 5 (critical emergency)"""
@@ -205,7 +244,7 @@ class TriageAgent:
         for condition, data in significance.items():
             if (data['significant'] and 
                 condition in self.critical_conditions and 
-                data['confidence'] > 0.6):
+                data['confidence'] > 0.3):  # Lowered threshold for mock data
                 critical.append(f"{condition} (confidence: {data['confidence']:.1%})")
                 
         return critical
@@ -242,7 +281,7 @@ class TriageAgent:
             "Infiltration": "Substance accumulation in lung tissue",
             "Mass": "Abnormal growth or tumor",
             "Nodule": "Small round growth in lung",
-            "Pleural Thickening": "Thickening of lung lining",
+            "Pleural_Thickening": "Thickening of lung lining",
             "Pneumonia": "Infection causing inflammation in lungs",
             "Pneumothorax": "Collapsed lung due to air in pleural space"
         }
@@ -254,13 +293,14 @@ class TriageAgent:
             'name': 'Triage Agent',
             'status': 'active',
             'address': str(self.agent.address),
+            'modal_endpoint': self.modal_endpoint,
             'capabilities': [
-                'Chest X-ray analysis',
+                'Chest X-ray analysis via Modal',
                 'Lung disease detection',
                 'Urgency assessment',
-                'Statistical significance calculation'
+                'Critical findings identification'
             ],
-            'supported_conditions': LABELS,
+            'supported_conditions': self.labels,
             'critical_conditions': self.critical_conditions,
             'last_updated': datetime.now().isoformat()
         }
@@ -269,7 +309,8 @@ class TriageAgent:
         """Start the agent"""
         print(f"🔍 Starting Triage Agent...")
         print(f"📍 Agent address: {self.agent.address}")
-        print(f"🫁 Supported conditions: {LABELS}")
+        print(f"🔗 Modal endpoint: {self.modal_endpoint}")
+        print(f"🫁 Supported conditions: {self.labels}")
         print("=" * 50)
         self.agent.run()
 

@@ -1,0 +1,20 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 0.011177626451011747,
+    "val_loss": 0.00048105849033163394,
+    "train_auc": NaN,
+    "val_auc": NaN,
+    "learning_rate": 0.001,
+    "samples_processed": 1000
+  },
+  {
+    "epoch": 2,
+    "train_loss": 0.0003882322079734877,
+    "val_loss": 0.0004002392109396169,
+    "train_auc": NaN,
+    "val_auc": NaN,
+    "learning_rate": 0.001,
+    "samples_processed": 1000
+  }
+]

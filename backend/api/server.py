@@ -73,12 +73,12 @@ class APIServer:
                 return
             
             # Import and initialize the lung classifier
-            from utils.lung_classifier import LungClassifierTrainer
+            # from utils.lung_classifier import LungClassifierTrainer
             
-            self.lung_classifier = LungClassifierTrainer()
+            # self.lung_classifier = LungClassifierTrainer()
             
             # Test that the model can be loaded with a simple test
-            logger.info("🧪 Testing model with dummy prediction...")
+            # logger.info("🧪 Testing model with dummy prediction...")
             
             # Create a simple test image
             import tempfile
@@ -277,6 +277,20 @@ class APIServer:
                 "health_percentage": (active_count / total_count) * 100 if total_count > 0 else 0
             }
         }
+            
+    @app.get("/api/modal-health")
+    async def check_modal_health():
+        """Check if Modal service is healthy"""
+        try:
+            modal_health_url = "https://joannsum--xightmd-simple-health.modal.run"
+            async with httpx.AsyncClient() as client:
+                response = await client.get(modal_health_url, timeout=10)
+                if response.status_code == 200:
+                    return {"modal_status": "healthy", "modal_response": response.json()}
+                else:
+                    return {"modal_status": "unhealthy", "status_code": response.status_code}
+        except Exception as e:
+            return {"modal_status": "error", "error": str(e)}
 
     @app.get("/api/analysis/{request_id}")
     async def get_analysis_result(request_id: str):
