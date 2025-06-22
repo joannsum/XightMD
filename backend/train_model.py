@@ -9,6 +9,7 @@ import os
 from PIL import Image
 import numpy as np
 from sklearn.metrics import roc_auc_score, average_precision_score, hamming_loss, f1_score
+from sklearn.utils.class_weight import compute_class_weight
 import pandas as pd
 from tqdm import tqdm
 import json
@@ -72,17 +73,50 @@ class NIHChestXrayDataset(Dataset):
             dummy_labels = torch.zeros(len(LABELS), dtype=torch.float32)
             return dummy_image, dummy_labels
 
+def calculate_and_cache_class_weights(dataset, cache_file='models/class_weights.json'):
+    try:
+        with open(cache_file, 'r') as f:
+            weights_dict = json.load(f)
+            weights = [weights_dict[label] for label in LABELS]
+            print("✅ Loaded cached class weights")
+            return torch.FloatTensor(weights)
+    except FileNotFoundError:
+        print("📊 Computing class weights...")
+
+        all_labels = []
+        for _, labels in dataset:
+            all_labels.append(labels.numpy())
+        all_labels = np.vstack(all_labels)
+
+        weights = []
+        weights_dict = {}
+        for i in range(all_labels.shape[1]):
+            class_counts = np.bincount(all_labels[:, i].astype(int))
+            if len(class_counts) == 1:
+                weight = 1.0
+            else:
+                weight = class_counts[0] / class_counts[1]
+            weights.append(weight)
+            weights_dict[LABELS[i]] = float(weight)
+
+        os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+        with open(cache_file, 'w') as f:
+            json.dump(weights_dict, f, indent=2)
+        print("💾 Cached class weights for future use")
+
+        return torch.FloatTensor(weights)
+
 def calculate_multilabel_metrics(targets, predictions, threshold=0.5):
     predictions_binary = (predictions > threshold).astype(int)
-    
+
     metrics = {}
-    
+
     metrics['hamming_loss'] = hamming_loss(targets, predictions_binary)
     metrics['avg_precision_macro'] = average_precision_score(targets, predictions, average='macro')
     metrics['avg_precision_micro'] = average_precision_score(targets, predictions, average='micro')
     metrics['f1_macro'] = f1_score(targets, predictions_binary, average='macro', zero_division=0)
     metrics['f1_micro'] = f1_score(targets, predictions_binary, average='micro', zero_division=0)
-    
+
     condition_metrics = {}
     for i, condition in enumerate(LABELS):
         if np.sum(targets[:, i]) > 0:
@@ -100,7 +134,7 @@ def calculate_multilabel_metrics(targets, predictions, threshold=0.5):
                     'f1': 0.0,
                     'positive_samples': int(np.sum(targets[:, i]))
                 }
-    
+
     metrics['per_condition'] = condition_metrics
     return metrics
 
@@ -109,7 +143,7 @@ def validate_model(model, val_loader, criterion, device):
     val_loss = 0.0
     all_predictions = []
     all_targets = []
-    
+
     with torch.no_grad():
         for images, labels in val_loader:
             images = images.to(device)
@@ -118,15 +152,15 @@ def validate_model(model, val_loader, criterion, device):
             outputs = model(images)
             loss = criterion(outputs, labels)
             val_loss += loss.item()
-            
+
             all_predictions.append(torch.sigmoid(outputs).cpu().numpy())
             all_targets.append(labels.cpu().numpy())
-    
+
     all_predictions = np.vstack(all_predictions)
     all_targets = np.vstack(all_targets)
-    
+
     metrics = calculate_multilabel_metrics(all_targets, all_predictions)
-    
+
     return val_loss / len(val_loader), metrics
 
 def train_model(args):
@@ -139,55 +173,61 @@ def train_model(args):
         return
 
     trainer = LungClassifierTrainer()
-    
+
     train_dataset = NIHChestXrayDataset(
+        dataset['train'],
+        transform=trainer.transform,
         dataset['train'],
         transform=trainer.transform,
         max_samples=args.max_train_samples
     )
-    
+
     val_size = min(1000, len(train_dataset) // 10)
     train_size = len(train_dataset) - val_size
-    
+
     train_dataset, val_dataset = torch.utils.data.random_split(
         train_dataset, [train_size, val_size]
     )
-    
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=0
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=0
     )
-    
+
     print(f"📊 Training samples: {len(train_dataset)}")
     print(f"📊 Validation samples: {len(val_dataset)}")
-    
+
     device = trainer.device
     model = LungDiseaseClassifier(num_classes=len(LABELS), pretrained=True)
     model = model.to(device)
+    
     model.backbone.classifier = nn.Sequential(
         nn.Dropout(0.5),
         nn.Linear(model.backbone.classifier[1].in_features, len(LABELS))
     ).to(device)
 
-    criterion = nn.BCEWithLogitsLoss()
+    class_weights = calculate_and_cache_class_weights(train_dataset)
+    print("Class weights:", {LABELS[i]: f"{w:.2f}" for i, w in enumerate(class_weights)})
+
+    criterion = nn.BCEWithLogitsLoss(pos_weight=class_weights.to(device))
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     scheduler = ReduceLROnPlateau(optimizer, mode='max', patience=3, factor=0.5)
-    
+
     start_epoch = 0
     training_history = []
     best_f1 = 0.0
     checkpoint_dir = os.path.join('models', 'checkpoints')
     os.makedirs(checkpoint_dir, exist_ok=True)
-    
+
     if args.resume_from:
         print(f"📂 Resuming from checkpoint: {args.resume_from}")
         try:
@@ -256,10 +296,10 @@ def train_model(args):
         if val_metrics['f1_macro'] > best_f1:
             best_f1 = val_metrics['f1_macro']
             patience_counter = 0
-        
+
             best_model_path = 'models/lung_classifier_FIXED_best.pth'
             torch.save({
-            'epoch': epoch + 1,
+                'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'best_f1': best_f1,
