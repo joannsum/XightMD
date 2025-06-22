@@ -13,6 +13,14 @@ from tqdm import tqdm
 import json
 import re
 
+# UPDATED LABELS - Add "No Finding" as the last class
+LABELS = [
+    "Atelectasis", "Cardiomegaly", "Consolidation", "Edema",
+    "Effusion", "Emphysema", "Fibrosis", "Hernia", "Infiltration",
+    "Mass", "Nodule", "Pleural Thickening", "Pneumonia", "Pneumothorax",
+    "No Finding"  # Add this!
+]
+
 def extract_epoch_from_checkpoint(checkpoint_path):
     try:
         match = re.search(r'epoch_(\d+)\.pth$', checkpoint_path)
@@ -29,6 +37,7 @@ class NIHChestXrayDataset(Dataset):
         self.split = split
         self.max_samples = max_samples
 
+        # FIXED label mapping
         self.label_mapping = {
             'Atelectasis': 'Atelectasis',
             'Cardiomegaly': 'Cardiomegaly',
@@ -43,7 +52,8 @@ class NIHChestXrayDataset(Dataset):
             'Nodule': 'Nodule',
             'Pleural_Thickening': 'Pleural Thickening',
             'Pneumonia': 'Pneumonia',
-            'Pneumothorax': 'Pneumothorax'
+            'Pneumothorax': 'Pneumothorax',
+            'No Finding': 'No Finding'  # Fixed mapping
         }
 
         if self.max_samples:
@@ -63,15 +73,33 @@ class NIHChestXrayDataset(Dataset):
                     
             if self.transform:
                 image = self.transform(image)
+
+            # FIXED: Proper label encoding
                 labels = torch.zeros(len(LABELS), dtype=torch.float32)
 
+            # Check if this is a "No Finding" case
+            has_finding = False
+
+            # First, check for positive findings
             for nih_label, our_label in self.label_mapping.items():
-                    if item.get(nih_label, 0) == 1:
+                if nih_label != 'No Finding' and item.get(nih_label, 0) == 1:
                         if our_label in LABELS:
                             label_idx = LABELS.index(our_label)
                             labels[label_idx] = 1.0
+                        has_finding = True
                     
+            # If no findings detected, set "No Finding" to 1
+            if not has_finding and item.get('No Finding', 0) == 1:
+                no_finding_idx = LABELS.index('No Finding')
+                labels[no_finding_idx] = 1.0
+
+            # Debug: Print label info for first few samples
+            if idx < 5:
+                positive_labels = [LABELS[i] for i, val in enumerate(labels) if val == 1.0]
+                print(f"Sample {idx} labels: {positive_labels}")
+
             return image, labels
+
         except Exception as e:
             print(f"⚠️  Error loading sample {idx}: {e}")
             dummy_image = torch.zeros(3, 224, 224)
@@ -131,7 +159,10 @@ def train_model(args):
     print("\nDEBUG: Checking first sample from dataset")
     first_sample = next(iter(dataset['train']))
     print("Available keys:", first_sample.keys())
-    print("Label values:", {k: v for k, v in first_sample.items() if k in LABEL_MAPPING})
+
+    # FIXED: Use the instance's label_mapping
+    sample_dataset = NIHChestXrayDataset(None)  # Just to get label_mapping
+    print("Label values:", {k: v for k, v in first_sample.items() if k in sample_dataset.label_mapping})
 
     checkpoint_dir = 'models/checkpoints'
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -225,8 +256,9 @@ def train_model(args):
 
                 if processed_samples < 5:
                     print(f"\nDEBUG Sample {processed_samples} raw labels:")
+                    sample_dataset = NIHChestXrayDataset(None)
                     for k, v in item.items():
-                        if k in label_mapping:
+                        if k in sample_dataset.label_mapping:
                             print(f"{k}: {v}")
 
                 image = item['image']
@@ -234,19 +266,32 @@ def train_model(args):
                     image = image.convert('RGB')
                 image_tensor = trainer.transform(image)
 
+                # FIXED: Use proper label encoding logic
                 labels = torch.zeros(len(LABELS), dtype=torch.float32)
+                has_finding = False
                 label_assignments = []
-                for nih_label, our_label in label_mapping.items():
-                    if item.get(nih_label, 0) == 1:
+
+                # Check for pathological findings first
+                sample_dataset = NIHChestXrayDataset(None)
+                for nih_label, our_label in sample_dataset.label_mapping.items():
+                    if nih_label != 'No Finding' and item.get(nih_label, 0) == 1:
                         if our_label in LABELS:
                             label_idx = LABELS.index(our_label)
                             labels[label_idx] = 1.0
+                            has_finding = True
                             label_assignments.append(f"{nih_label} -> {our_label}")
+
+                # If no pathological findings, check for "No Finding"
+                if not has_finding and item.get('No Finding', 0) == 1:
+                    no_finding_idx = LABELS.index('No Finding')
+                    labels[no_finding_idx] = 1.0
+                    label_assignments.append("No Finding -> No Finding")
 
                 if processed_samples < 5:
                     print(f"Label assignments for sample {processed_samples}:")
-                    print("\n".join(label_assignments))
+                    print("\n".join(label_assignments) if label_assignments else "No labels assigned")
                     print(f"Final label tensor: {labels}")
+                    print(f"Label sum: {torch.sum(labels)}")
 
                 batch_images.append(image_tensor)
                 batch_labels.append(labels)
@@ -328,10 +373,18 @@ def train_model(args):
                     image_tensor = trainer.transform(image).unsqueeze(0).to(device)
 
                     labels = torch.zeros(1, len(LABELS), dtype=torch.float32).to(device)
-                    for nih_label, our_label in label_mapping.items():
-                        if item.get(nih_label, 0) == 1 and our_label in LABELS:
+                    has_finding = False
+
+                    sample_dataset = NIHChestXrayDataset(None)
+                    for nih_label, our_label in sample_dataset.label_mapping.items():
+                        if nih_label != 'No Finding' and item.get(nih_label, 0) == 1 and our_label in LABELS:
                             label_idx = LABELS.index(our_label)
                             labels[0, label_idx] = 1.0
+                            has_finding = True
+
+                    if not has_finding and item.get('No Finding', 0) == 1:
+                        no_finding_idx = LABELS.index('No Finding')
+                        labels[0, no_finding_idx] = 1.0
 
                     outputs = model(image_tensor)
                     loss = criterion(outputs, labels)

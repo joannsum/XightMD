@@ -11,11 +11,13 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 LABELS = [
     "Atelectasis", "Cardiomegaly", "Consolidation", "Edema",
     "Effusion", "Emphysema", "Fibrosis", "Hernia", "Infiltration",
-    "Mass", "Nodule", "Pleural Thickening", "Pneumonia", "Pneumothorax"
+    "Mass", "Nodule", "Pleural Thickening", "Pneumonia", "Pneumothorax",
+    "No Finding"
 ]
 
 class LungDiseaseClassifier(nn.Module):
-    def __init__(self, num_classes: int = 14, pretrained: bool = True):
+
+    def __init__(self, num_classes: int = 15, pretrained: bool = True):
         super(LungDiseaseClassifier, self).__init__()
         # Use DenseNet-121 as requested
         self.backbone = models.densenet121(pretrained=pretrained)
