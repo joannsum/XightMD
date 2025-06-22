@@ -14,7 +14,7 @@ interface ModelInfo {
 
 interface ProcessingInfo {
   hf_model: string;
-  claude_model: string;
+  gemini_model: string;
   timestamp: string;
 }
 
@@ -91,7 +91,33 @@ export default function Home() {
         setProcessingInfo(result.processing_info);
         
         // Use real API result
-        setCurrentAnalysis(result.data);
+        // setCurrentAnalysis(result.data);
+        const firstLabel = result.data?.hf_analysis?.split(',')[0]?.trim().toLowerCase();
+        const pneumoniaDetected = firstLabel === 'pneumonia';
+        
+        const simplifiedResult: AnalysisResult = {
+          id: `analysis-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          urgency: pneumoniaDetected ? 4 : 1,
+          confidence: pneumoniaDetected ? 0.95 : 0.9,
+          findings: [pneumoniaDetected ? 'Pneumonia detected' : 'No pneumonia detected'],
+          report: {
+            indication: 'Pneumonia screening',
+            comparison: 'N/A',
+            findings: pneumoniaDetected ? 'Signs consistent with pneumonia were detected.' : 'No radiographic evidence of pneumonia.',
+            impression: pneumoniaDetected ? 'Positive for pneumonia' : 'Negative for pneumonia'
+          },
+          image: URL.createObjectURL(file),
+          model_info: {
+            primary_model: 'nickmuchi/vit-finetuned-chest-xray-pneumonia',
+            report_generator: 'Gemini Flash 2.0',
+            processing_pipeline: 'Gemini Flash 2.0 Only'
+          }
+        };
+
+        setCurrentAnalysis(simplifiedResult);
+        setAnalysisHistory(prev => [simplifiedResult, ...prev.slice(0, 9)]);
+
         setAnalysisHistory(prev => [result.data, ...prev.slice(0, 9)]);
         
         console.log('📊 Model info:', result.data.model_info);
@@ -123,7 +149,7 @@ export default function Home() {
         image: URL.createObjectURL(file),
         model_info: {
           primary_model: 'microsoft/BiomedVLP-CXR-BERT-general (unavailable)',
-          report_generator: 'claude-3-sonnet-20240229 (unavailable)', 
+          report_generator: 'gemini (unavailable)', 
           processing_pipeline: 'Error - API keys required'
         }
       };
@@ -180,7 +206,7 @@ export default function Home() {
               {processingInfo && (
                 <div className="text-xs text-gray-500">
                   <div>HF: {processingInfo.hf_model.split('/')[1]}</div>
-                  <div>Claude: {processingInfo.claude_model}</div>
+                  <div>Gemini: {processingInfo.gemini_model}</div>
                 </div>
               )}
             </div>

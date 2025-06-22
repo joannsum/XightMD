@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 const HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/nickmuchi/vit-finetuned-chest-xray-pneumonia";
 
-const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY 
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-interface ClaudeResponse {
-  content: Array<{
-    type: string;
-    text: string;
-  }>;
+interface GeminiResponse {
+  candidates: Array<{
+    content: {
+      parts: Array<{ text: string }>
+    }
+  }>
 }
 
 // Analyze X-ray with Hugging Face
@@ -34,96 +35,67 @@ async function analyzeWithHuggingFace(imageBase64: string): Promise<any> {
   return await response.json();
 }
 
-// Generate structured report with Claude
-async function generateReportWithClaude(hfAnalysis: string, imageBase64: string): Promise<any> {
-  const prompt = `You are a radiologist AI assistant. Based on the following chest X-ray analysis from a medical AI model, generate a structured radiology report.
+async function analyzeWithGemini(imageBase64: string, hfAnalysis: string): Promise<any> {
+  const prompt = `You are a radiologist AI assistant. Based on the chest X-ray image and this analysis from a model ("${hfAnalysis}"), generate a structured radiology report with:
 
-AI Analysis: "${hfAnalysis}"
+1. INDICATION
+2. COMPARISON
+3. FINDINGS
+4. IMPRESSION
 
-Please provide a structured report with these sections:
-1. INDICATION: Why the X-ray was performed
-2. COMPARISON: Prior studies (if any)
-3. FINDINGS: Detailed observations of the chest X-ray
-4. IMPRESSION: Summary and clinical significance
+Also include:
+- urgency score (1-5),
+- confidence score (0-1),
+- 3-5 bullet-point key findings,
+- clinical recommendations.
 
-Also provide:
-- Urgency score (1-5, where 5 is critical)
-- Confidence score (0-1)
-- Key findings list (3-5 bullet points)
-- Clinical recommendations if any
+Respond only in JSON.`;
 
-Format your response as JSON with this structure:
-{
-  "report": {
-    "indication": "string",
-    "comparison": "string", 
-    "findings": "string",
-    "impression": "string"
-  },
-  "urgency": number,
-  "confidence": number,
-  "findings": ["string"],
-  "recommendations": ["string"]
-}`;
-
-  const response = await fetch(CLAUDE_API_URL, {
+  const response = await fetch(`${GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
     method: 'POST',
-    headers: {
-      'x-api-key': process.env.ANTHROPIC_API_KEY!, // ✅ correct key name
-      'Content-Type': 'application/json',
-      'anthropic-version': '2023-06-01',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'claude-3-opus-20240229',
-      max_tokens: 1500,
-      messages: [
+      contents: [
         {
-          role: 'user',
-          content: [
+          parts: [
+            { text: prompt },
             {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: 'image/jpeg',
+              inlineData: {
+                mimeType: 'image/jpeg',
                 data: imageBase64,
-              },
-            },
-            {
-              type: 'text',
-              text: prompt,
-            },
-          ],
-        },
-      ],
+              }
+            }
+          ]
+        }
+      ]
     }),
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('Claude API error:', errorText);
-    throw new Error(`Claude API failed: ${response.status}`);
+    console.error('Gemini API error:', errorText);
+    throw new Error(`Gemini API failed: ${response.status}`);
   }
 
-  const claudeResponse: ClaudeResponse = await response.json();
-  const reportText = claudeResponse.content[0].text;
+  const result: GeminiResponse = await response.json();
+  const text = result.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
   try {
-    const jsonMatch = reportText.match(/\{[\s\S]*\}/);
-    if (jsonMatch) return JSON.parse(jsonMatch[0]);
-    throw new Error('No JSON found in Claude response');
+    const json = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || '{}');
+    return json;
   } catch (err) {
-    console.error('Failed to parse Claude response:', err);
+    console.warn('❌ Failed to parse Gemini JSON, returning fallback.');
     return {
       report: {
-        indication: "Chest X-ray analysis",
-        comparison: "No prior studies available",
-        findings: reportText.slice(0, 500),
-        impression: "Analysis completed with AI assistance",
+        indication: "Chest X-ray evaluation",
+        comparison: "None available",
+        findings: hfAnalysis,
+        impression: "See above AI interpretation"
       },
       urgency: 2,
       confidence: 0.75,
-      findings: ["AI analysis completed", "See detailed findings above"],
-      recommendations: ["Clinical correlation recommended"],
+      findings: ["Check for pneumonia", "Review image abnormalities"],
+      recommendations: ["Clinical follow-up recommended"]
     };
   }
 }
@@ -156,18 +128,18 @@ export async function POST(request: NextRequest) {
 
     console.log('✅ Hugging Face analysis:', hfAnalysis);
 
-    // Step 2: Claude
-    console.log('🧠 Generating structured report with Claude...');
-    const claudeAnalysis = await generateReportWithClaude(hfAnalysis, imageBase64);
-    console.log('✅ Claude report generated');
+    // Step 2: Gemini
+    console.log('🧠 Generating structured report with Gemini...');
+    const geminiAnalysis = await analyzeWithGemini(imageBase64, hfAnalysis);
+    console.log('✅ Gemini report generated');
 
     const result = {
       id: `analysis-${Date.now()}`,
       timestamp: new Date().toISOString(),
-      urgency: claudeAnalysis.urgency || 2,
-      confidence: claudeAnalysis.confidence || 0.75,
-      findings: claudeAnalysis.findings || ['AI-generated findings'],
-      report: claudeAnalysis.report,
+      urgency: geminiAnalysis.urgency || 2,
+      confidence: geminiAnalysis.confidence || 0.75,
+      findings: geminiAnalysis.findings || ['AI-generated findings'],
+      report: geminiAnalysis.report,
       image: `data:${imageFile.type};base64,${imageBase64}`,
       hf_analysis: hfAnalysis,
       model_info: {
