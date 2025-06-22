@@ -1,5 +1,24 @@
 // src/types/index.ts
 
+export interface ApiResponse<T = any> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  message?: string;
+}
+
+export interface HealthStatus {
+  status: 'healthy' | 'degraded' | 'unhealthy';
+  timestamp: string;
+  services: {
+    api: 'up' | 'down';
+    agents: 'up' | 'down' | 'partial';
+    database?: 'up' | 'down';
+  };
+  uptime?: number;
+  version?: string;
+}
+
 export interface AnalysisResult {
   id: string;
   timestamp: string;
