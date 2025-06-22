@@ -33,7 +33,8 @@ def test_classifier():
     parser.add_argument('--model', type=str, help='Specific model path to use')
     parser.add_argument('--dummy', action='store_true', help='Use dummy image for testing')
     parser.add_argument('--atelectasis', action='store_true', help='Use Atelectasis-specific model')
-    
+    parser.add_argument('--cardiomegaly', action='store_true', help='Use Cardiomegaly-specific model')
+
     args = parser.parse_args()
     
     # Determine model path - prioritize Atelectasis model ONLY if requested
@@ -45,6 +46,15 @@ def test_classifier():
         else:
             print(f"❌ Atelectasis model not found: {model_path}")
             return
+    if args.cardiomegaly:
+        model_path = "models/checkpoints/Cardiomegaly/best_model_Cardiomegaly.pth"
+        if os.path.exists(model_path):
+            print(f"🫁 Using CARDIOMEGALY-SPECIFIC model: {model_path}")
+            print("🎯 This model is specialized for Cardiomegaly detection")
+        else:
+            print(f"❌ Cardiomegaly model not found: {model_path}")
+            return    
+
     elif args.model and os.path.exists(args.model):
         model_path = args.model
         print(f"Using specified model: {model_path}")
@@ -55,6 +65,7 @@ def test_classifier():
             "models/lung_classifier_trained.pth", 
             "models/lung_classifier_final.pth",
             "models/checkpoints/Atelectasis/best_model_Atelectasis.pth", # Atelectasis as fallback
+            "models/checkpoints/Cardiomegaly/best_model_Cardiomegaly.pth", # Cardiomegaly as fallback
             "models/lung_classifier.pth"
         ]
         
@@ -68,6 +79,8 @@ def test_classifier():
             print(f"Found model: {model_path}")
             if "Atelectasis" in model_path:
                 print("🫁 Using ATELECTASIS-SPECIFIC model (no general model found)!")
+            if "Cardiomegaly" in model_path:
+                print("🫁 Using CARDIOMEGALY-SPECIFIC model (no general model found)!")
             elif "best" in model_path:
                 print("🏆 Using BEST GENERAL model from training!")
         else:
