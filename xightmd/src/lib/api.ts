@@ -5,18 +5,30 @@ import { AnalysisResult, ApiResponse, HealthStatus } from '@/types';
 class ApiClient {
   private baseUrl: string;
 
-  constructor(baseUrl: string = '') {
-    this.baseUrl = baseUrl;
+  constructor() {
+    // Use environment variable with fallback
+    this.baseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+    
+    // Remove trailing slash if present
+    this.baseUrl = this.baseUrl.replace(/\/$/, '');
+    
+    console.log('🔧 API Client initialized with baseUrl:', this.baseUrl);
   }
 
   async analyzeImage(file: File): Promise<ApiResponse<AnalysisResult>> {
     try {
+      console.log('🔍 Sending analysis request to:', `${this.baseUrl}/api/analyze`);
+      
       const formData = new FormData();
       formData.append('image', file);
 
       const response = await fetch(`${this.baseUrl}/api/analyze`, {
         method: 'POST',
         body: formData,
+        // Add headers for CORS if needed
+        headers: {
+          // Don't set Content-Type for FormData - browser will set it with boundary
+        },
       });
 
       if (!response.ok) {
@@ -24,9 +36,11 @@ class ApiClient {
         throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
       }
 
-      return await response.json();
+      const result = await response.json();
+      console.log('✅ Analysis response received:', result);
+      return result;
     } catch (error) {
-      console.error('Analysis API error:', error);
+      console.error('❌ Analysis API error:', error);
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error occurred'
@@ -36,6 +50,8 @@ class ApiClient {
 
   async getHealthStatus(): Promise<ApiResponse<HealthStatus>> {
     try {
+      console.log('🏥 Checking health at:', `${this.baseUrl}/api/health`);
+      
       const response = await fetch(`${this.baseUrl}/api/health`);
       
       if (!response.ok) {
@@ -48,7 +64,7 @@ class ApiClient {
         data
       };
     } catch (error) {
-      console.error('Health check API error:', error);
+      console.error('❌ Health check API error:', error);
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Health check failed'
@@ -58,24 +74,30 @@ class ApiClient {
 
   async getAgentStatus(): Promise<ApiResponse<any>> {
     try {
-      // This would typically call your backend agent status endpoint
-      const response = await fetch(`${this.baseUrl}/api/agents/status`);
+      console.log('🤖 Checking agent status at:', `${this.baseUrl}/api/agent-status`);
+      
+      const response = await fetch(`${this.baseUrl}/api/agent-status`);
       
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      return await response.json();
+      const result = await response.json();
+      console.log('📊 Agent status response:', result);
+      return result;
     } catch (error) {
-      console.error('Agent status API error:', error);
-      // Return mock data for development
+      console.error('❌ Agent status API error:', error);
+      
+      // Return mock data for development/fallback
       return {
         success: true,
         data: {
-          coordinator: { status: 'active', lastSeen: new Date().toISOString() },
-          triage: { status: 'active', lastSeen: new Date().toISOString() },
-          report: { status: 'active', lastSeen: new Date().toISOString() },
-          qa: { status: 'active', lastSeen: new Date().toISOString() }
+          agents: {
+            coordinator: { status: 'offline', lastSeen: new Date().toISOString() },
+            triage: { status: 'offline', lastSeen: new Date().toISOString() },
+            report: { status: 'offline', lastSeen: new Date().toISOString() },
+            qa: { status: 'offline', lastSeen: new Date().toISOString() }
+          }
         }
       };
     }
@@ -112,12 +134,26 @@ class ApiClient {
       };
     }
   }
+
+  // Helper method to check if we're using production API
+  isProduction(): boolean {
+    return this.baseUrl.includes('railway.app');
+  }
+
+  // Get current API info
+  getApiInfo() {
+    return {
+      baseUrl: this.baseUrl,
+      environment: process.env.NEXT_PUBLIC_ENV || 'development',
+      isProduction: this.isProduction()
+    };
+  }
 }
 
 // Export singleton instance
 export const apiClient = new ApiClient();
 
-// Utility functions
+// Rest of your utility functions remain the same...
 export const formatFileSize = (bytes: number): string => {
   if (bytes === 0) return '0 Bytes';
   const k = 1024;
@@ -148,6 +184,7 @@ export const validateImageFile = (file: File): { valid: boolean; error?: string 
 };
 
 export const downloadReport = (analysis: AnalysisResult, format: 'json' | 'txt' = 'txt'): void => {
+  // Your existing downloadReport function...
   let content: string;
   let filename: string;
   let mimeType: string;
