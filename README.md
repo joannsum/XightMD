@@ -1,10 +1,9 @@
-
 # XightMD - Chest X-Ray Multi-Label Classification
 
 ## Model Performance
 
-- **Current F1 Score**: 0.22 (epoch 45, still training)
-- **Baseline**: Random = 0.067, so 3.27x improvement
+- **Current F1 Score**: 0.23 (epoch 60, still training)
+- **Baseline**: Random = 0.067, so 3.43x improvement
 - **Architecture**: EfficientNet-B0 with 2-layer classifier
 - **Dataset**: NIH Chest X-ray 14, ~10k samples
 
@@ -98,9 +97,10 @@ balanced_lung_trainer.py            # Balanced training pipeline
 train_optimized.py                  # Full training with metrics tracking
 ```
 
-## Current Results (Epoch 45)
+## Current Results (Epoch 60)
 
-**Macro F1**: 0.22
+**Macro F1**: 0.23
+- Training trend: Consistent improvement over 60 epochs
 - Better performing classes: Cardiomegaly (~0.35), Pneumonia (~0.28)
 - Challenging classes: Hernia, Fibrosis (limited training data)
 
