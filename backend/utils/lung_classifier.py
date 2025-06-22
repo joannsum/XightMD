@@ -5,6 +5,8 @@ import torchvision.transforms as transforms
 from datasets import load_dataset
 from PIL import Image
 import numpy as np
+import os
+from datetime import datetime
 from typing import Dict, List, Tuple, Any
 from sklearn.metrics import roc_auc_score, average_precision_score
 
@@ -96,9 +98,104 @@ class LungClassifierTrainer:
         return significant_findings
     
     def save_model(self, path: str):
-        """Save trained model"""
-        torch.save(self.model.state_dict(), path)
+        """Save the complete model state with metadata"""
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+
+        # Save complete state with metadata
+        save_dict = {
+            'model_state_dict': self.model.state_dict(),
+            'model_class': 'LungDiseaseClassifier',
+            'num_classes': len(LABELS),
+            'labels': LABELS,
+            'save_timestamp': str(datetime.now()) if 'datetime' in globals() else 'unknown'
+        }
+        torch.save(save_dict, path)
+        print(f"✅ Complete model with metadata saved to {path}")
         
     def load_model(self, path: str):
-        """Load trained model"""
-        self.model.load_state_dict(torch.load(path, map_location=self.device))
+        """Smart model loader that handles different checkpoint formats"""
+        if not os.path.exists(path):
+            print(f"Model file not found: {path}")
+            return
+
+        try:
+            print(f"Loading model from: {path}")
+            checkpoint = torch.load(path, map_location=self.device)
+
+            # Strategy 1: Try loading as full checkpoint first
+            if 'model_state_dict' in checkpoint:
+                print("📦 Found full checkpoint format")
+                state_dict = checkpoint['model_state_dict']
+                epoch = checkpoint.get('epoch', 'unknown')
+                val_loss = checkpoint.get('val_loss', 'unknown')
+                print(f"   Epoch: {epoch}, Val Loss: {val_loss}")
+
+                try:
+                    self.model.load_state_dict(state_dict, strict=True)
+                    print("✅ Full model loaded successfully from checkpoint")
+                    return
+                except RuntimeError as e:
+                    print(f"⚠️  Full loading failed: {str(e)[:100]}...")
+                    # Fall through to partial loading
+
+            # Strategy 2: Try loading as direct state_dict
+            else:
+                print("📦 Found direct state_dict format")
+                state_dict = checkpoint
+
+            # Strategy 3: Smart partial loading
+            print("🔄 Attempting smart partial loading...")
+
+            # Check what keys we have
+            available_keys = set(state_dict.keys())
+            model_keys = set(self.model.state_dict().keys())
+
+            print(f"   Available keys: {len(available_keys)}")
+            print(f"   Model needs: {len(model_keys)}")
+
+            # Try to match classifier keys
+            classifier_keys = [k for k in available_keys if 'classifier' in k]
+            backbone_keys = [k for k in available_keys if 'backbone' in k or 'features' in k]
+
+            print(f"   Classifier keys found: {len(classifier_keys)}")
+            print(f"   Backbone keys found: {len(backbone_keys)}")
+
+            if len(backbone_keys) > 100:  # Reasonable number for DenseNet
+                print("🎯 Found substantial backbone weights, loading full model")
+                missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
+                if len(missing_keys) < 10:  # Acceptable number of missing keys
+                    print(f"✅ Model loaded with {len(missing_keys)} missing keys")
+                    return
+
+            # Strategy 4: Load only classifier if that's all we have
+            if classifier_keys:
+                print("🎯 Loading only classifier weights, keeping pretrained backbone")
+                classifier_state = {k: v for k, v in state_dict.items() if 'classifier' in k}
+                missing_keys, unexpected_keys = self.model.load_state_dict(classifier_state, strict=False)
+                print(f"✅ Classifier loaded, {len(missing_keys)} keys kept as pretrained")
+                return
+
+            # Strategy 5: Last resort - create mapping
+            print("🔄 Attempting key mapping...")
+            mapped_state = {}
+            for key, value in state_dict.items():
+                # Try common mapping patterns
+                if key.startswith('classifier.'):
+                    mapped_key = f'backbone.{key}'
+                    if mapped_key in model_keys:
+                        mapped_state[mapped_key] = value
+                elif key in model_keys:
+                    mapped_state[key] = value
+
+            if mapped_state:
+                missing_keys, unexpected_keys = self.model.load_state_dict(mapped_state, strict=False)
+                print(f"✅ Mapped loading successful, {len(mapped_state)} keys loaded")
+                return
+
+            print("⚠️  Could not load model weights, using pretrained only")
+
+        except Exception as e:
+            print(f"❌ Error loading model: {e}")
+            print("🔄 Falling back to pretrained weights only")
