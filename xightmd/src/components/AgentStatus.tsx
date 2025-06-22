@@ -30,6 +30,23 @@ export default function AgentStatus({ agents }: AgentStatusProps) {
     }
   };
 
+  const formatLastSeen = (lastSeen: Date | string) => {
+    if (!lastSeen) return 'Never';
+    
+    try {
+      // Convert string to Date if needed
+      const date = typeof lastSeen === 'string' ? new Date(lastSeen) : lastSeen;
+      
+      // Check if date is valid
+      if (isNaN(date.getTime())) return 'Unknown';
+      
+      return date.toLocaleTimeString();
+    } catch (error) {
+      console.warn('Error formatting lastSeen:', error);
+      return 'Unknown';
+    }
+  };
+
   const agentDescriptions = {
     coordinator: 'Orchestrates analysis pipeline',
     triage: 'Analyzes X-rays and determines urgency',
@@ -98,7 +115,7 @@ export default function AgentStatus({ agents }: AgentStatusProps) {
                     {getStatusText(agent.status)}
                   </div>
                   <div className="text-xs text-gray-400">
-                    {agent.lastSeen.toLocaleTimeString()}
+                    {formatLastSeen(agent.lastSeen)}
                   </div>
                 </div>
               </div>
@@ -126,11 +143,17 @@ export default function AgentStatus({ agents }: AgentStatusProps) {
 
           {/* Action Buttons */}
           <div className="mt-4 flex space-x-2">
-            <button className="flex-1 bg-blue-600 text-white py-2 px-3 rounded text-xs font-medium hover:bg-blue-700 transition-colors">
+            <button 
+              onClick={() => window.location.reload()}
+              className="flex-1 bg-blue-600 text-white py-2 px-3 rounded text-xs font-medium hover:bg-blue-700 transition-colors"
+            >
               Refresh Status
             </button>
-            <button className="flex-1 border border-gray-300 text-gray-700 py-2 px-3 rounded text-xs font-medium hover:bg-gray-50 transition-colors">
-              View Logs
+            <button 
+              onClick={() => console.log('Agent details:', agents)}
+              className="flex-1 border border-gray-300 text-gray-700 py-2 px-3 rounded text-xs font-medium hover:bg-gray-50 transition-colors"
+            >
+              View Details
             </button>
           </div>
         </div>

@@ -34,6 +34,7 @@ class ImageAnalysisResponse(Model):
 
 class TriageAgent:
     def __init__(self, agent_address: str = "triage_agent"):
+        # REMOVED enable_wallet parameter
         self.agent = Agent(
             name="triage_agent",
             port=8001,
@@ -266,13 +267,13 @@ class TriageAgent:
 
     def run(self):
         """Start the agent"""
-        print(f"Starting Triage Agent...")
-        print(f"Agent address: {self.agent.address}")
-        print(f"Supported conditions: {LABELS}")
+        print(f"🔍 Starting Triage Agent...")
+        print(f"📍 Agent address: {self.agent.address}")
+        print(f"🫁 Supported conditions: {LABELS}")
+        print("=" * 50)
         self.agent.run()
 
 if __name__ == "__main__":
     # Initialize and run the triage agent
     triage_agent = TriageAgent()
     triage_agent.run()
-

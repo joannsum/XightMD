@@ -12,10 +12,10 @@ export default function Home() {
   const [currentAnalysis, setCurrentAnalysis] = useState<AnalysisResult | null>(null);
   const [analysisHistory, setAnalysisHistory] = useState<AnalysisResult[]>([]);
   const [agentStatuses, setAgentStatuses] = useState<AgentStatuses>({
-    coordinator: { status: 'active', lastSeen: new Date() },
-    triage: { status: 'active', lastSeen: new Date() },
-    report: { status: 'active', lastSeen: new Date() },
-    qa: { status: 'active', lastSeen: new Date() }
+    coordinator: { status: 'offline', lastSeen: new Date() },
+    triage: { status: 'offline', lastSeen: new Date() },
+    report: { status: 'offline', lastSeen: new Date() },
+    qa: { status: 'offline', lastSeen: new Date() }
   });
 
   // Fetch real agent status updates
@@ -24,6 +24,8 @@ export default function Home() {
       try {
         console.log('🔍 Fetching agent status...');
         const response = await fetch('/api/agent-status');
+        console.log('📡 Response status:', response.status);
+        
         if (response.ok) {
           const data = await response.json();
           console.log('📊 Agent status response:', data);
@@ -53,18 +55,37 @@ export default function Home() {
             };
             
             setAgentStatuses(formattedAgents);
+            console.log('✅ Agent statuses updated:', formattedAgents);
+            console.log('🔍 Active agents count:', Object.values(formattedAgents).filter(a => a.status === 'active').length);
+          } else {
+            console.warn('⚠️ API response missing success or agents data:', data);
+          }
+        } else {
+          console.warn('⚠️ Agent status API returned non-OK status:', response.status);
+          // Try to read error response
+          try {
+            const errorData = await response.text();
+            console.error('Error response:', errorData);
+          } catch (e) {
+            console.error('Could not read error response');
           }
         }
       } catch (error) {
         console.error('❌ Failed to fetch agent status:', error);
-        // Keep previous status on error
+        // Set all agents to offline on error
+        setAgentStatuses(prev => ({
+          coordinator: { ...prev.coordinator, status: 'offline' },
+          triage: { ...prev.triage, status: 'offline' },
+          report: { ...prev.report, status: 'offline' },
+          qa: { ...prev.qa, status: 'offline' }
+        }));
       }
     };
 
     // Initial fetch
     fetchAgentStatus();
 
-    // Set up polling every 10 seconds
+    // Set up polling every 10 seconds (reduced frequency to avoid spam)
     const interval = setInterval(fetchAgentStatus, 10000);
 
     return () => clearInterval(interval);
@@ -79,39 +100,53 @@ export default function Home() {
       const formData = new FormData();
       formData.append('image', file);
 
-      // Simulate API call to backend
+      console.log('🔍 Sending image to backend for analysis...');
+      
+      // Call actual API
       const response = await fetch('/api/analyze', {
         method: 'POST',
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error('Analysis failed');
+        throw new Error(`Analysis failed: ${response.status} ${response.statusText}`);
       }
 
       const result = await response.json();
+      console.log('✅ Analysis result received:', result);
       
-      // For demo purposes, create mock result if API not available
+      if (result.success && result.data) {
+        // Use real API result
+        setCurrentAnalysis(result.data);
+        setAnalysisHistory(prev => [result.data, ...prev.slice(0, 9)]);
+      } else {
+        throw new Error('Invalid response format');
+      }
+      
+    } catch (error) {
+      console.error('❌ Analysis failed:', error);
+      
+      // Create fallback mock result only on error
       const mockResult: AnalysisResult = {
         id: `analysis-${Date.now()}`,
         timestamp: new Date().toISOString(),
         urgency: Math.floor(Math.random() * 5) + 1,
         confidence: Math.random() * 0.3 + 0.7,
-        findings: ['No acute cardiopulmonary abnormality', 'Heart size normal', 'Lungs clear'],
+        findings: ['Analysis failed - using mock data', 'Check server connection', 'Ensure backend is running'],
         report: {
-          indication: 'Chest pain, rule out pneumonia',
-          comparison: 'No prior studies available for comparison',
-          findings: 'The heart size is normal. The lungs are clear bilaterally without evidence of consolidation, pleural effusion, or pneumothorax. The mediastinal and hilar contours appear normal. No acute osseous abnormalities are identified.',
-          impression: 'No acute cardiopulmonary abnormality. Normal chest radiograph.'
+          indication: 'System error occurred during analysis',
+          comparison: 'No comparison available due to system error',
+          findings: 'Unable to analyze image due to system error. Please check that the backend server and agent network are running properly.',
+          impression: 'System maintenance required. Mock result displayed for demonstration purposes.'
         },
         image: URL.createObjectURL(file)
       };
 
-      setCurrentAnalysis(result.data || mockResult);
-      setAnalysisHistory(prev => [result.data || mockResult, ...prev.slice(0, 9)]);
-    } catch (error) {
-      console.error('Analysis failed:', error);
-      // Handle error appropriately
+      setCurrentAnalysis(mockResult);
+      setAnalysisHistory(prev => [mockResult, ...prev.slice(0, 9)]);
+      
+      // Show user-friendly error
+      alert('Analysis failed. Please check that the backend server is running. Showing mock data for demo purposes.');
     } finally {
       setIsAnalyzing(false);
     }

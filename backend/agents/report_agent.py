@@ -21,6 +21,7 @@ class ReportGenerationResponse(Model):
 
 class ReportAgent:
     def __init__(self):
+        # REMOVED enable_wallet parameter
         self.agent = Agent(
             name="report_agent",
             port=8002,
@@ -228,7 +229,8 @@ class ReportAgent:
         """Start the agent"""
         print(f"📄 Starting Report Agent...")
         print(f"📍 Agent address: {self.agent.address}")
-        print(f"🔗 Agent endpoints: {self.agent.endpoints}")
+        print("💡 Running in local mode")
+        print("=" * 50)
         self.agent.run()
 
 if __name__ == "__main__":
