@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-const HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models/nickmuchi/vit-finetuned-chest-xray-pneumonia";
+import { spawn } from 'child_process';
+import path from 'path';
+import fs from 'fs/promises';
 
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
@@ -12,31 +14,57 @@ interface GeminiResponse {
   }>
 }
 
-// Analyze X-ray with Hugging Face
-async function analyzeWithHuggingFace(imageBase64: string): Promise<any> {
-  const response = await fetch(HUGGINGFACE_API_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.HUGGINGFACE_API_KEY}`, // ✅ use the correct token for HF
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      inputs: `data:image/jpeg;base64,${imageBase64}`,
-      options: { wait_for_model: true },
-    }),
-  });
+async function analyzeWithLocalModel(imageBuffer: Buffer): Promise<any> {
+  const tmpDir = path.join(process.cwd(), 'tmp');
+  await fs.mkdir(tmpDir, { recursive: true });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Hugging Face API error:', errorText);
-    throw new Error(`Hugging Face API failed: ${response.status}`);
+  const tmpFilePath = path.join(tmpDir, `upload-${Date.now()}.jpg`);
+  await fs.writeFile(tmpFilePath, imageBuffer);
+  try {
+    return new Promise((resolve, reject) => {
+      const pythonProcess = spawn('python', [
+        'inference.py',
+        '--model_path', 'lung_classifier_best.pth',
+        '--image_path', tmpFilePath
+      ]);
+
+      let output = '';
+      let errorOutput = '';
+
+      pythonProcess.stdout.on('data', (data) => {
+        output += data.toString();
+      });
+
+      pythonProcess.stderr.on('data', (data) => {
+        errorOutput += data.toString();
+      });
+
+      pythonProcess.on('close', (code) => {
+        fs.unlink(tmpFilePath).catch(console.error);
+
+        if (code !== 0) {
+          console.error('Python process error:', errorOutput);
+          reject(new Error(`Python process failed with code ${code}`));
+          return;
+        }
+        try {
+          const result = JSON.parse(output);
+          resolve(result);
+  } catch (err) {
+          reject(new Error('Failed to parse Python output'));
+        }
+      });
+    });
+  } catch (err) {
+    await fs.unlink(tmpFilePath).catch(console.error);
+    throw err;
   }
-
-  return await response.json();
 }
 
-async function analyzeWithGemini(imageBase64: string, hfAnalysis: string): Promise<any> {
-  const prompt = `You are a radiologist AI assistant. Based on the chest X-ray image and this analysis from a model ("${hfAnalysis}"), generate a structured radiology report with:
+async function analyzeWithGemini(imageBase64: string, modelAnalysis: any): Promise<any> {
+  const analysisText = `Model prediction: ${modelAnalysis.prediction}, Confidence: ${modelAnalysis.confidence}`;
+
+  const prompt = `You are a radiologist AI assistant. Based on the chest X-ray image and this analysis from our lung classifier model ("${analysisText}"), generate a structured radiology report with:
 
 1. INDICATION
 2. COMPARISON
@@ -56,7 +84,7 @@ Respond only in JSON.`;
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [
-        {
+      {
           parts: [
             { text: prompt },
             {
@@ -84,25 +112,27 @@ Respond only in JSON.`;
     const json = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || '{}');
     return json;
   } catch (err) {
-    console.warn('❌ Failed to parse Gemini JSON, returning fallback.');
+    console.warn('Failed to parse Gemini JSON, returning fallback.');
     return {
       report: {
         indication: "Chest X-ray evaluation",
         comparison: "None available",
-        findings: hfAnalysis,
+        findings: analysisText,
         impression: "See above AI interpretation"
       },
-      urgency: 2,
-      confidence: 0.75,
-      findings: ["Check for pneumonia", "Review image abnormalities"],
-      recommendations: ["Clinical follow-up recommended"]
+      urgency: modelAnalysis.prediction === "abnormal" ? 3 : 1,
+      confidence: modelAnalysis.confidence,
+      findings: [modelAnalysis.prediction === "abnormal" ?
+        "Potential abnormality detected" :
+        "No significant abnormalities detected"],
+      recommendations: ["Clinical correlation recommended"]
     };
-  }
+}
 }
 
 export async function POST(request: NextRequest) {
   try {
-    console.log('🔍 Starting Hugging Face + Claude analysis...');
+    console.log('Starting local model + Gemini analysis...');
 
     const formData = await request.formData();
     const imageFile = formData.get('image') as File;
@@ -114,38 +144,30 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const imageBuffer = await imageFile.arrayBuffer();
-    const imageBase64 = Buffer.from(imageBuffer).toString('base64');
-    console.log('📸 Image converted to base64, size:', imageBase64.length);
+    const imageBuffer = Buffer.from(await imageFile.arrayBuffer());
+    const imageBase64 = imageBuffer.toString('base64');
 
-    // Step 1: Hugging Face
-    console.log('🤗 Calling Hugging Face model...');
-    const hfResponse = await analyzeWithHuggingFace(imageBase64);
+    console.log('Running local lung classifier model...');
+    const modelResponse = await analyzeWithLocalModel(imageBuffer);
+    console.log('Local model analysis:', modelResponse);
 
-    const hfAnalysis = Array.isArray(hfResponse)
-      ? hfResponse.map((res: any) => res.label || res.generated_text || '').join(', ')
-      : hfResponse.label || hfResponse.generated_text || 'No output';
-
-    console.log('✅ Hugging Face analysis:', hfAnalysis);
-
-    // Step 2: Gemini
-    console.log('🧠 Generating structured report with Gemini...');
-    const geminiAnalysis = await analyzeWithGemini(imageBase64, hfAnalysis);
-    console.log('✅ Gemini report generated');
+    console.log('Generating structured report with Gemini...');
+    const geminiAnalysis = await analyzeWithGemini(imageBase64, modelResponse);
+    console.log('Gemini report generated');
 
     const result = {
       id: `analysis-${Date.now()}`,
       timestamp: new Date().toISOString(),
       urgency: geminiAnalysis.urgency || 2,
-      confidence: geminiAnalysis.confidence || 0.75,
+      confidence: modelResponse.confidence || 0.75,
       findings: geminiAnalysis.findings || ['AI-generated findings'],
       report: geminiAnalysis.report,
       image: `data:${imageFile.type};base64,${imageBase64}`,
-      hf_analysis: hfAnalysis,
+      model_analysis: modelResponse,
       model_info: {
-        primary_model: 'nickmuchi/vit-finetuned-chest-xray-pneumonia',
-        report_generator: 'claude-3-haiku-20240307',
-        pipeline: 'huggingface + claude',
+        primary_model: 'lung_classifier_best.pth (Local)',
+        report_generator: 'Gemini Flash 2.0',
+        pipeline: 'Local PyTorch + Gemini',
       },
     };
 
@@ -154,7 +176,7 @@ export async function POST(request: NextRequest) {
       data: result,
     });
   } catch (err: any) {
-    console.error('❌ Analysis failed:', err);
+    console.error('Analysis failed:', err);
     return NextResponse.json(
       {
         success: false,

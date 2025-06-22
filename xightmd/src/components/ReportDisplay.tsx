@@ -3,6 +3,12 @@
 import { AnalysisResult } from '@/types';
 import { useState } from 'react';
 
+interface FindingResult {
+  condition: string;
+  confidence: number;
+  confidence_level: string;
+}
+
 interface ReportDisplayProps {
   analysis: AnalysisResult | null;
   isLoading: boolean;
@@ -13,23 +19,19 @@ export default function ReportDisplay({ analysis, isLoading }: ReportDisplayProp
   const [radiologistNotes, setRadiologistNotes] = useState('');
   const [showValidation, setShowValidation] = useState(false);
 
-  // Function to download PDF report
   const handleDownloadPDF = () => {
     if (!analysis || !analysis.pdf_data) {
-      // Fallback to text download if no PDF available
       handleDownloadReport();
       return;
     }
     
     try {
-      // Decode base64 PDF data
       const binaryString = atob(analysis.pdf_data);
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i);
       }
       
-      // Create and download PDF
       const blob = new Blob([bytes], { type: 'application/pdf' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -46,7 +48,6 @@ export default function ReportDisplay({ analysis, isLoading }: ReportDisplayProp
     }
   };
 
-  // Function to download text report (fallback)
   const handleDownloadReport = () => {
     if (!analysis) return;
     
@@ -88,7 +89,6 @@ IMPORTANT: This report is for research and educational purposes only.
 Always consult qualified healthcare professionals for medical diagnosis.
     `.trim();
     
-    // Create and download text file
     const blob = new Blob([reportContent], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -100,7 +100,6 @@ Always consult qualified healthcare professionals for medical diagnosis.
     URL.revokeObjectURL(url);
   };
 
-  // Function to share results (copy to clipboard)
   const handleShareResults = async () => {
     if (!analysis) return;
     
@@ -120,13 +119,10 @@ Always consult qualified healthcare professionals for medical diagnosis.
     }
   };
 
-  // Handle radiologist validation
-  const handleFindingToggle = (finding: string) => {
-    setSelectedFindings(prev => 
-      prev.includes(finding) 
-        ? prev.filter(f => f !== finding)
-        : [...prev, finding]
-    );
+  const getConfidenceBadgeColor = (confidence: number) => {
+    if (confidence > 0.6) return 'bg-red-100 text-red-800 border-red-200';
+    if (confidence > 0.4) return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+    return 'bg-blue-100 text-blue-800 border-blue-200';
   };
 
   if (isLoading) {
@@ -167,176 +163,130 @@ Always consult qualified healthcare professionals for medical diagnosis.
     );
   }
 
-  const getUrgencyColor = (urgency: number) => {
-    if (urgency >= 4) return 'bg-red-100 text-red-800 border-red-200';
-    if (urgency >= 3) return 'bg-yellow-100 text-yellow-800 border-yellow-200';
-    return 'bg-green-100 text-green-800 border-green-200';
-  };
-
-  const getUrgencyLabel = (urgency: number) => {
-    if (urgency >= 4) return 'High Priority';
-    if (urgency >= 3) return 'Medium Priority';
-    return 'Normal';
-  };
-
   return (
     <div className="bg-white rounded-xl shadow-lg p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold text-gray-900">Analysis Results</h2>
         <div className="text-sm text-gray-500">
-          {new Date(analysis.timestamp).toLocaleString()}
+          {analysis && new Date(analysis.timestamp).toLocaleString()}
         </div>
       </div>
 
-      {/* Urgency and Confidence Indicators */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className={`p-3 rounded-lg border ${getUrgencyColor(analysis.urgency)}`}>
-          <div className="text-sm font-medium">Priority Level</div>
-          <div className="text-lg font-bold">{getUrgencyLabel(analysis.urgency)}</div>
-        </div>
-        <div className="p-3 rounded-lg border bg-blue-50 text-blue-800 border-blue-200">
-          <div className="text-sm font-medium">Confidence</div>
-          <div className="text-lg font-bold">{(analysis.confidence * 100).toFixed(1)}%</div>
-        </div>
-      </div>
-
-      {/* AI Findings with Validation */}
-      <div className="bg-gray-50 rounded-lg p-4">
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-semibold text-gray-900">AI Detected Findings</h3>
-          <button
-            onClick={() => setShowValidation(!showValidation)}
-            className="text-sm text-blue-600 hover:text-blue-700 font-medium"
-          >
-            {showValidation ? 'Hide Validation' : 'Validate Findings'}
-          </button>
-        </div>
-        
-        <div className="space-y-2">
-          {analysis.findings.map((finding, index) => (
-            <div key={index} className="flex items-start space-x-2">
-              {showValidation ? (
-                <button
-                  onClick={() => handleFindingToggle(finding)}
-                  className={`mt-1 w-4 h-4 rounded border-2 flex items-center justify-center transition-colors ${
-                    selectedFindings.includes(finding)
-                      ? 'bg-green-500 border-green-500 text-white'
-                      : 'border-gray-300 hover:border-green-400'
-                  }`}
-                >
-                  {selectedFindings.includes(finding) && (
-                    <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                    </svg>
-                  )}
-                </button>
-              ) : (
-                <div className="w-2 h-2 bg-blue-500 rounded-full mt-2 flex-shrink-0"></div>
-              )}
-              <span className={`text-gray-700 text-sm ${selectedFindings.includes(finding) ? 'font-medium text-green-700' : ''}`}>
-                {finding}
-              </span>
-            </div>
-          ))}
-        </div>
-
-        {showValidation && (
-          <div className="mt-4 space-y-3">
-            <div>
-              <label htmlFor="radiologist-notes" className="block text-sm font-medium text-gray-700 mb-1">
-                Additional Notes (Radiologist Input)
-              </label>
-              <textarea
-                id="radiologist-notes"
-                rows={3}
-                value={radiologistNotes}
-                onChange={(e) => setRadiologistNotes(e.target.value)}
-                placeholder="Add your professional observations or corrections..."
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
-              />
-            </div>
-            {selectedFindings.length > 0 && (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                <p className="text-sm text-green-800 font-medium">
-                  ✅ Validated Findings: {selectedFindings.length} of {analysis.findings.length}
-                </p>
+      {analysis && (
+        <>
+          {analysis.model_analysis.has_critical_findings && (
+            <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded">
+              <div className="flex items-center">
+                <div className="flex-shrink-0">
+                  <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <div className="ml-3">
+                  <h3 className="text-sm font-medium text-red-800">Critical Findings Detected</h3>
+                  <p className="text-sm text-red-700 mt-1">
+                    Urgent review recommended. Multiple significant abnormalities detected.
+                  </p>
+                </div>
               </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Detailed Report */}
-      <div className="space-y-4">
-        <h3 className="font-semibold text-gray-900">Radiology Report</h3>
-        
-        <div className="space-y-4">
-          <div className="border-l-4 border-blue-500 pl-4 py-2 bg-blue-50">
-            <h4 className="font-medium text-blue-900 mb-1">INDICATION</h4>
-            <p className="text-blue-800 text-sm">{analysis.report.indication}</p>
-          </div>
-
-          <div className="border-l-4 border-green-500 pl-4 py-2 bg-green-50">
-            <h4 className="font-medium text-green-900 mb-1">COMPARISON</h4>
-            <p className="text-green-800 text-sm">{analysis.report.comparison}</p>
-          </div>
-
-          <div className="border-l-4 border-purple-500 pl-4 py-2 bg-purple-50">
-            <h4 className="font-medium text-purple-900 mb-1">FINDINGS</h4>
-            <p className="text-purple-800 text-sm leading-relaxed">{analysis.report.findings}</p>
-          </div>
-
-          <div className="border-l-4 border-orange-500 pl-4 py-2 bg-orange-50">
-            <h4 className="font-medium text-orange-900 mb-1">IMPRESSION</h4>
-            <p className="text-orange-800 text-sm font-medium">{analysis.report.impression}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Action Buttons */}
-      <div className="flex space-x-3 pt-4 border-t">
-        <button 
-          onClick={handleDownloadPDF}
-          className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium flex items-center justify-center space-x-2"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
-          <span>Download {analysis.pdf_data ? 'PDF' : 'Report'}</span>
-        </button>
-        <button 
-          onClick={handleShareResults}
-          className="flex-1 border border-gray-300 text-gray-700 py-2 px-4 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium flex items-center justify-center space-x-2"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
-          </svg>
-          <span>Share Results</span>
-        </button>
-      </div>
-
-      {/* Validation Summary */}
-      {showValidation && selectedFindings.length > 0 && (
-        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-          <h4 className="font-medium text-green-900 mb-2">Validation Summary</h4>
-          <p className="text-sm text-green-800">
-            <strong>Confirmed Findings:</strong> {selectedFindings.join(', ')}
-          </p>
-          {radiologistNotes && (
-            <p className="text-sm text-green-800 mt-2">
-              <strong>Notes:</strong> {radiologistNotes}
-            </p>
+            </div>
           )}
-        </div>
-      )}
 
-      {/* Analysis ID and Disclaimer */}
-      <div className="text-xs text-gray-400 text-center pt-2 border-t space-y-1">
-        <p>Analysis ID: {analysis.id}</p>
-        <p className="text-red-600 font-medium">
-          ⚠️ For research and educational purposes only. Not for clinical diagnosis.
-        </p>
-      </div>
+          <div className="grid grid-cols-1 gap-4">
+            {analysis.model_analysis.top_findings.map((finding: FindingResult, index: number) => (
+              <div
+                key={index}
+                className={`p-4 rounded-lg border ${getConfidenceBadgeColor(finding.confidence)}`}
+              >
+                <div className="flex justify-between items-start">
+                  <div>
+                    <h4 className="font-medium">{finding.condition}</h4>
+                    <p className="text-sm mt-1">
+                      Confidence Level: {finding.confidence_level}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-lg font-bold">
+                      {(finding.confidence * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <h3 className="font-semibold text-gray-900 mb-3">All Conditions</h3>
+            <div className="space-y-2">
+              {Object.entries(analysis.model_analysis.predictions).map(([condition, confidence]) => (
+                <div key={condition} className="flex items-center justify-between text-sm">
+                  <span className="text-gray-700">{condition}</span>
+                  <div className="flex items-center space-x-2">
+                    <div className="w-24 h-2 bg-gray-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500 rounded-full"
+                        style={{ width: `${confidence * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-gray-600 font-medium w-12 text-right">
+                      {(confidence * 100).toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <h3 className="font-semibold text-gray-900">Significant Findings</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {Object.entries(analysis.model_analysis.significant_findings)
+                .filter(([_, data]) => data.significant)
+                .map(([condition, data]) => (
+                  <div
+                    key={condition}
+                    className={`p-3 rounded-lg border ${getConfidenceBadgeColor(data.confidence)}`}
+                  >
+                    <h4 className="font-medium">{condition}</h4>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-sm">{data.confidence_level} Confidence</span>
+                      <span className="font-bold">{(data.confidence * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex space-x-3 pt-4 border-t">
+            <button
+              onClick={handleDownloadReport}
+              className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium flex items-center justify-center space-x-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <span>Download Report</span>
+            </button>
+            <button
+              onClick={handleShareResults}
+              className="flex-1 border border-gray-300 text-gray-700 py-2 px-4 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium flex items-center justify-center space-x-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
+              </svg>
+              <span>Share Results</span>
+            </button>
+          </div>
+
+          <div className="text-xs text-gray-400 text-center pt-2 border-t space-y-1">
+            <p>Analysis ID: {analysis.id}</p>
+            <p>Model: {analysis.model_info.primary_model}</p>
+            <p className="text-red-600 font-medium">
+              ⚠️ For research and educational purposes only. Not for clinical diagnosis.
+            </p>
+          </div>
+        </>
+      )}
     </div>
   );
 }

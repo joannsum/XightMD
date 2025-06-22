@@ -1,6 +1,7 @@
 // src/types/index.ts
 
 export interface AnalysisResult {
+  model_analysis: any;
   id: string;
   timestamp: string;
   urgency: number; // 1-5 scale
