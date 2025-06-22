@@ -32,19 +32,29 @@ def test_classifier():
     parser.add_argument('--image', type=str, help='Path to X-ray image')
     parser.add_argument('--model', type=str, help='Specific model path to use')
     parser.add_argument('--dummy', action='store_true', help='Use dummy image for testing')
+    parser.add_argument('--atelectasis', action='store_true', help='Use Atelectasis-specific model')
     
     args = parser.parse_args()
     
-    # Determine model path
-    if args.model and os.path.exists(args.model):
+    # Determine model path - prioritize Atelectasis model ONLY if requested
+    if args.atelectasis:
+        model_path = "models/checkpoints/Atelectasis/best_model_Atelectasis.pth"
+        if os.path.exists(model_path):
+            print(f"🫁 Using ATELECTASIS-SPECIFIC model: {model_path}")
+            print("🎯 This model is specialized for Atelectasis detection")
+        else:
+            print(f"❌ Atelectasis model not found: {model_path}")
+            return
+    elif args.model and os.path.exists(args.model):
         model_path = args.model
         print(f"Using specified model: {model_path}")
     else:
-        # Try to find best available model
+        # Default model search order - GENERAL models first
         model_candidates = [
-            "models/lung_classifier_best.pth",
+            "models/lung_classifier_best.pth",                           # BEST general model
             "models/lung_classifier_trained.pth", 
             "models/lung_classifier_final.pth",
+            "models/checkpoints/Atelectasis/best_model_Atelectasis.pth", # Atelectasis as fallback
             "models/lung_classifier.pth"
         ]
         
@@ -56,8 +66,10 @@ def test_classifier():
         
         if model_path:
             print(f"Found model: {model_path}")
-            if "best" in model_path:
-                print("🏆 Using BEST model from training!")
+            if "Atelectasis" in model_path:
+                print("🫁 Using ATELECTASIS-SPECIFIC model (no general model found)!")
+            elif "best" in model_path:
+                print("🏆 Using BEST GENERAL model from training!")
         else:
             print("⚠️  No trained model found, using pretrained weights only")
     
@@ -89,6 +101,7 @@ def test_classifier():
         print("❌ No image provided!")
         print("Usage examples:")
         print("  python test_classifier.py --dummy")
+        print("  python test_classifier.py --atelectasis --dummy")
         print("  python test_classifier.py --image /path/to/xray.jpg")
         return
     
@@ -113,22 +126,53 @@ def test_classifier():
         significance = classifier.get_statistical_significance(predictions)
         print("✅ Statistical analysis completed")
         
+        # Special handling for Atelectasis model
+        if "Atelectasis" in str(model_path):
+            print(f"\n🫁 ATELECTASIS-SPECIFIC ANALYSIS")
+            print("="*60)
+            
+            atelectasis_confidence = predictions.get('Atelectasis', 0.0)
+            atelectasis_sig = significance.get('Atelectasis', {})
+            
+            if atelectasis_confidence > 0.16:
+                print(f"🔴 ATELECTASIS DETECTED!")
+                print(f"   Confidence: {atelectasis_confidence:.3f} ({atelectasis_sig.get('confidence_level', 'Unknown')})")
+                print(f"   Status: {'SIGNIFICANT' if atelectasis_sig.get('significant', False) else 'not significant'}")
+                print(f"   📋 Atelectasis is partial collapse of lung tissue")
+                print(f"   📋 Requires medical evaluation and possible intervention")
+            elif atelectasis_confidence > 0.10:
+                print(f"🟡 POSSIBLE ATELECTASIS")
+                print(f"   Confidence: {atelectasis_confidence:.3f} ({atelectasis_sig.get('confidence_level', 'Unknown')})")
+                print(f"   📋 Borderline detection - recommend clinical correlation")
+            else:
+                print(f"🟢 NO ATELECTASIS DETECTED")
+                print(f"   Confidence: {atelectasis_confidence:.3f}")
+                print(f"   📋 Lung expansion appears normal")
+            
+            print("\n" + "="*60)
+        
         # Check for critical conditions first
         critical_findings = []
-        for condition in ['Pneumothorax', 'Mass', 'Pneumonia']:
+        for condition in ['Pneumothorax', 'Mass', 'Pneumonia', 'Atelectasis']:
             if condition in predictions and predictions[condition] > 0.3:
                 critical_findings.append((condition, predictions[condition]))
         
         if critical_findings:
-            print(f"\n🚨 CRITICAL FINDINGS DETECTED!")
+            print(f"\n🚨 NOTABLE FINDINGS:")
             for condition, confidence in critical_findings:
-                print(f"   🚨 {condition}: {confidence:.3f} confidence")
+                urgency = ""
                 if condition == 'Pneumothorax':
-                    print(f"      ⚠️  IMMEDIATE MEDICAL ATTENTION REQUIRED!")
+                    urgency = " ⚠️  IMMEDIATE ATTENTION!"
+                elif condition == 'Atelectasis':
+                    urgency = " 📋 Requires evaluation"
+                elif condition in ['Mass', 'Pneumonia']:
+                    urgency = " 🔬 Further workup needed"
+                    
+                print(f"   🚨 {condition}: {confidence:.3f} confidence{urgency}")
         
         # Display detailed results
         print("\n" + "="*60)
-        print("LUNG DISEASE CLASSIFICATION RESULTS")
+        print("COMPLETE CLASSIFICATION RESULTS")
         print("="*60)
         
         # Sort by confidence
@@ -142,15 +186,24 @@ def test_classifier():
             status = "POSITIVE" if sig_data['significant'] else "negative"
             confidence_level = sig_data['confidence_level']
             
-            # Visual indicators
-            if sig_data['significant'] and confidence > 0.7:
-                indicator = "🔴"
-            elif sig_data['significant'] and confidence > 0.5:
-                indicator = "🟡"
-            elif confidence > 0.3:
-                indicator = "🟠"
+            # Special highlighting for Atelectasis
+            if condition == 'Atelectasis':
+                if confidence > 0.16:
+                    indicator = "🔴"
+                elif confidence > 0.10:
+                    indicator = "🟡"
+                else:
+                    indicator = "🟢"
             else:
-                indicator = "🟢"
+                # Visual indicators for other conditions
+                if sig_data['significant'] and confidence > 0.7:
+                    indicator = "🔴"
+                elif sig_data['significant'] and confidence > 0.5:
+                    indicator = "🟡"
+                elif confidence > 0.3:
+                    indicator = "🟠"
+                else:
+                    indicator = "🟢"
             
             print(f"{indicator} {condition:<18} {confidence:.3f}      {confidence_level:<8} {status}")
         
@@ -162,19 +215,28 @@ def test_classifier():
         if significant_findings:
             for condition, data in significant_findings:
                 confidence = predictions[condition]
-                print(f"  • {condition}: {confidence:.1%} confidence ({data['confidence_level']})")
+                clinical_note = ""
+                if condition == 'Atelectasis':
+                    clinical_note = " (Lung collapse/consolidation)"
+                print(f"  • {condition}: {confidence:.1%} confidence ({data['confidence_level']}){clinical_note}")
         else:
             print("  ✅ No significant pathologies detected")
         
         print("="*60)
         
         # Technical summary
+        model_type = "Atelectasis-Specific" if "Atelectasis" in str(model_path) else "General Multi-Class"
         print(f"\nTechnical Summary:")
-        print(f"  ✓ Model: {model_path or 'pretrained only'}")
+        print(f"  ✓ Model Type: {model_type}")
+        print(f"  ✓ Model Path: {model_path or 'pretrained only'}")
         print(f"  ✓ Image: {image_path}")
         print(f"  ✓ Conditions evaluated: {len(predictions)}")
         print(f"  ✓ Significant findings: {len(significant_findings)}")
         print(f"  ✓ Highest confidence: {max(predictions.values()):.3f}")
+        
+        if "Atelectasis" in str(model_path):
+            atelectasis_conf = predictions.get('Atelectasis', 0.0)
+            print(f"  🫁 Atelectasis confidence: {atelectasis_conf:.3f}")
         
     except Exception as e:
         print(f"❌ Error during analysis: {e}")
