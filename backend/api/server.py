@@ -69,19 +69,19 @@ class APIServer:
             logger.error(f"❌ Failed to connect to Modal: {e}")
             self.model_loaded = False
 
-    async def test_modal_connection(self):
-        """Test Modal service availability"""
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get("https://joannsum--xightmd-simple-health.modal.run", timeout=10)
-                if response.status_code == 200:
-                    self.model_loaded = True
-                    logger.info("✅ Modal service connected successfully!")
-                else:
-                    logger.warning(f"⚠️ Modal service returned status {response.status_code}")
-        except Exception as e:
-            logger.error(f"❌ Modal connection failed: {e}")
-            self.model_loaded = False
+    # async def test_modal_connection(self):
+    #     """Test Modal service availability"""
+    #     try:
+    #         async with httpx.AsyncClient() as client:
+    #             response = await client.get("https://joannsum--xightmd-simple-health.modal.run", timeout=10)
+    #             if response.status_code == 200:
+    #                 self.model_loaded = True
+    #                 logger.info("✅ Modal service connected successfully!")
+    #             else:
+    #                 logger.warning(f"⚠️ Modal service returned status {response.status_code}")
+    #     except Exception as e:
+    #         logger.error(f"❌ Modal connection failed: {e}")
+    #         self.model_loaded = False
     
     def setup_routes(self):
         """Setup API routes"""
@@ -306,7 +306,7 @@ class APIServer:
             "message": "XightMD Backend API",
             "version": "1.0.0",
             "status": "running",
-            "model_status": "loaded" if self.model_loaded else "not_loaded",
+            "model_status": "loaded" if api_server.model_loaded else "not_loaded",
             "endpoints": {
                 "health": "/api/health",
                 "analyze": "/api/analyze",
