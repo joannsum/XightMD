@@ -11,14 +11,19 @@ from typing import Dict, Any, Optional
 import os
 import sys
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 # Add the backend directory to the Python path to import utils
 backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, backend_dir)
+
 
 app = FastAPI(title="XightMD API", version="1.0.0")
 
@@ -167,147 +172,163 @@ class APIServer:
                 "lung_classifier": "available" if self.model_loaded else "unavailable"
             }
 
-        @app.get("/api/agents/status")
-        async def get_agent_status():
-            """Get real status of all agents"""
-            agent_statuses = {}
-            
-            # Check coordinator (this server)
-            agent_statuses["coordinator"] = {
-                "status": "active",
-                "lastSeen": datetime.now().isoformat(),
-                "details": {
-                    "capabilities": ["Image analysis", "Lung classification", "Report generation"],
-                    "port": 8000,
-                    "health": "healthy",
-                    "service": "fastapi_api",
-                    "model_loaded": self.model_loaded
-                }
-            }
-            
-            # Check triage agent (lung classifier)
-            if self.model_loaded:
-                agent_statuses["triage"] = {
-                    "status": "active",
-                    "lastSeen": datetime.now().isoformat(),
-                    "details": {
-                        "capabilities": ["Lung disease detection", "Medical image analysis"],
-                        "model": "lung_classifier_best.pth",
-                        "type": "ml_model",
-                        "health": "loaded"
+        # Add this to your server.py - improved agent status detection
+
+    @app.get("/api/agents/status")
+    async def get_agent_status():
+        """Get real status of all agents using simple port checking"""
+        import socket
+        
+        agent_statuses = {}
+        
+        agents = {
+            "coordinator": {"port": 9000, "address": os.getenv("COORDINATOR_AGENT_ADDRESS", "agent1q...")},
+            "triage": {"port": 8001, "address": os.getenv("TRIAGE_AGENT_ADDRESS", "agent1q...")},
+            "report": {"port": 8002, "address": os.getenv("REPORT_AGENT_ADDRESS", "agent1q...")},
+            "qa": {"port": 8006, "address": os.getenv("QA_AGENT_ADDRESS", "agent1q...")}  # CHANGED: 8003 → 8006
+        }
+        
+        logger.info("🔍 Checking agent network status...")
+        
+        for agent_name, config in agents.items():
+            try:
+                # Simple port check
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                result = sock.connect_ex(('localhost', config["port"]))
+                sock.close()
+                
+                port_listening = (result == 0)
+                address_valid = not config["address"].endswith("agent1q...")
+                
+                if port_listening and address_valid:
+                    status = "active"
+                    last_seen = datetime.now().isoformat()
+                    details = {
+                        "port": config["port"],
+                        "address": config["address"],
+                        "type": "uagent",
+                        "connection": "listening",
+                        "check_result": "port_open_and_configured"
                     }
+                elif port_listening and not address_valid:
+                    status = "idle"
+                    last_seen = datetime.now().isoformat()
+                    details = {
+                        "port": config["port"],
+                        "address": config["address"],
+                        "type": "uagent",
+                        "connection": "listening",
+                        "warning": "Using placeholder address - check .env file",
+                        "check_result": "port_open_but_not_configured"
+                    }
+                else:
+                    status = "offline"
+                    last_seen = ""
+                    details = {
+                        "error": "Port not listening - agent not running",
+                        "port": config["port"],
+                        "address": config["address"],
+                        "type": "uagent",
+                        "check_result": "port_closed"
+                    }
+                
+                agent_statuses[agent_name] = {
+                    "status": status,
+                    "lastSeen": last_seen,
+                    "details": details
                 }
-            else:
-                agent_statuses["triage"] = {
-                    "status": "offline",
+                
+                logger.info(f"✅ {agent_name}: {status} (port {config['port']}, listening: {port_listening})")
+                
+            except Exception as e:
+                logger.error(f"❌ Error checking {agent_name}: {e}")
+                agent_statuses[agent_name] = {
+                    "status": "error",
                     "lastSeen": "",
                     "details": {
-                        "error": "Model not loaded",
-                        "type": "ml_model",
-                        "health": "unavailable"
+                        "error": str(e),
+                        "port": config["port"],
+                        "type": "uagent"
                     }
                 }
-            
-            # Check other agents by port (if they exist)
-            async with httpx.AsyncClient() as client:
-                for agent_name, port in AGENT_PORTS.items():
-                    if agent_name in ["coordinator", "triage"]:
-                        continue  # Already handled above
-                        
-                    try:
-                        import socket
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        sock.settimeout(1)
-                        result = sock.connect_ex(('localhost', port))
-                        sock.close()
-                        
-                        if result == 0:
-                            agent_statuses[agent_name] = {
-                                "status": "active",
-                                "lastSeen": datetime.now().isoformat(),
-                                "details": {
-                                    "port": port,
-                                    "type": "uagent",
-                                    "connection": "listening"
-                                }
-                            }
-                        else:
-                            agent_statuses[agent_name] = {
-                                "status": "offline",
-                                "lastSeen": "",
-                                "details": {
-                                    "error": "Not running",
-                                    "port": port,
-                                    "type": "uagent"
-                                }
-                            }
-                    except Exception as e:
-                        agent_statuses[agent_name] = {
-                            "status": "offline",
-                            "lastSeen": "",
-                            "details": {
-                                "error": "Not available",
-                                "port": port,
-                                "type": "uagent"
-                            }
-                        }
-            
-            return {
+        
+        # Calculate network health
+        active_count = sum(1 for a in agent_statuses.values() if a["status"] == "active")
+        total_count = len(agent_statuses)
+        
+        if active_count == total_count:
+            network_health = "optimal"
+        elif active_count > 0:
+            network_health = "degraded"
+        else:
+            network_health = "offline"
+        
+        logger.info(f"🌐 Network health: {network_health} ({active_count}/{total_count} agents active)")
+        
+        return {
+            "success": True,
+            "agents": agent_statuses,
+            "timestamp": datetime.now().isoformat(),
+            "network_health": network_health,
+            "summary": {
+                "total_agents": total_count,
+                "active_agents": active_count,
+                "health_percentage": (active_count / total_count) * 100 if total_count > 0 else 0
+            }
+        }
+
+    @app.get("/api/analysis/{request_id}")
+    async def get_analysis_result(request_id: str):
+        """Get analysis result by request ID"""
+        if request_id in analysis_results:
+            return JSONResponse(content={
                 "success": True,
-                "agents": agent_statuses,
-                "timestamp": datetime.now().isoformat(),
-                "network_health": "optimal" if self.model_loaded else "degraded"
-            }
+                "data": analysis_results[request_id]
+            })
+        else:
+            raise HTTPException(status_code=404, detail="Analysis not found")
 
-        @app.get("/api/analysis/{request_id}")
-        async def get_analysis_result(request_id: str):
-            """Get analysis result by request ID"""
-            if request_id in analysis_results:
-                return JSONResponse(content={
-                    "success": True,
-                    "data": analysis_results[request_id]
-                })
-            else:
-                raise HTTPException(status_code=404, detail="Analysis not found")
+    @app.get("/api/model/status")
+    async def get_model_status():
+        """Get detailed model status"""
+        model_info = {
+            "model_loaded": self.model_loaded,
+            "model_path": os.path.join(backend_dir, 'models', 'lung_classifier_best.pth'),
+            "model_exists": os.path.exists(os.path.join(backend_dir, 'models', 'lung_classifier_best.pth')),
+            "backend_dir": backend_dir,
+            "python_path": sys.path[:3]  # First 3 entries
+        }
+        
+        if self.lung_classifier:
+            try:
+                # Get model info if available
+                model_info["classifier_type"] = type(self.lung_classifier).__name__
+                if hasattr(self.lung_classifier, 'labels'):
+                    model_info["supported_labels"] = self.lung_classifier.labels
+            except:
+                pass
+        
+        return model_info
 
-        @app.get("/api/model/status")
-        async def get_model_status():
-            """Get detailed model status"""
-            model_info = {
-                "model_loaded": self.model_loaded,
-                "model_path": os.path.join(backend_dir, 'models', 'lung_classifier_best.pth'),
-                "model_exists": os.path.exists(os.path.join(backend_dir, 'models', 'lung_classifier_best.pth')),
-                "backend_dir": backend_dir,
-                "python_path": sys.path[:3]  # First 3 entries
+    @app.get("/")
+    async def root():
+        """Root endpoint"""
+        return {
+            "message": "XightMD Backend API",
+            "version": "1.0.0",
+            "status": "running",
+            "model_status": "loaded" if self.model_loaded else "not_loaded",
+            "endpoints": {
+                "health": "/api/health",
+                "analyze": "/api/analyze",
+                "agent_status": "/api/agents/status",
+                "model_status": "/api/model/status",
+                "docs": "/docs"
             }
-            
-            if self.lung_classifier:
-                try:
-                    # Get model info if available
-                    model_info["classifier_type"] = type(self.lung_classifier).__name__
-                    if hasattr(self.lung_classifier, 'labels'):
-                        model_info["supported_labels"] = self.lung_classifier.labels
-                except:
-                    pass
-            
-            return model_info
+        }
+        
 
-        @app.get("/")
-        async def root():
-            """Root endpoint"""
-            return {
-                "message": "XightMD Backend API",
-                "version": "1.0.0",
-                "status": "running",
-                "model_status": "loaded" if self.model_loaded else "not_loaded",
-                "endpoints": {
-                    "health": "/api/health",
-                    "analyze": "/api/analyze",
-                    "agent_status": "/api/agents/status",
-                    "model_status": "/api/model/status",
-                    "docs": "/docs"
-                }
-            }
 
     async def analyze_with_lung_classifier(self, image_data: str, image_format: str, request_id: str, filename: str = None) -> Dict[str, Any]:
         """Use lung classifier for analysis"""

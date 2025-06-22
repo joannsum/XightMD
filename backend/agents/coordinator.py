@@ -1,13 +1,11 @@
-from uagents import Agent, Context, Model, Protocol
-from uagents.setup import fund_agent_if_low
-from typing import Dict, Any, Optional
-from datetime import datetime
 import asyncio
-import json
-import uuid
-import base64
+from datetime import datetime
 import os
+from typing import Any, Dict, Optional
+import uuid
 from dotenv import load_dotenv
+from uagents import Agent, Context, Model
+from uagents.setup import fund_agent_if_low
 
 load_dotenv()
 
@@ -68,16 +66,22 @@ class AnalysisResponse(Model):
 
 # Create the coordinator agent
 coordinator = Agent(
-    name="coordinator", 
+    name="coordinator",
     port=9000,
-    seed="coordinator_recovery_phrase", 
-    endpoint=["http://127.0.0.1:9000/submit"],
+    seed="coordinator_recovery_phrase",
+    endpoint=["http://127.0.0.1:9000/submit"]
 )
 
-# Known agent addresses (you'll get these when you run the other agents)
-TRIAGE_AGENT_ADDRESS = "agent1q..."  # Replace with actual address from triage agent
-REPORT_AGENT_ADDRESS = "agent1q..."  # Replace with actual address from report agent
-QA_AGENT_ADDRESS = "agent1q..."      # Replace with actual address from QA agent
+# Get agent addresses from environment variables
+TRIAGE_AGENT_ADDRESS = os.getenv("TRIAGE_AGENT_ADDRESS", "agent1q...")
+REPORT_AGENT_ADDRESS = os.getenv("REPORT_AGENT_ADDRESS", "agent1q...")
+QA_AGENT_ADDRESS = os.getenv("QA_AGENT_ADDRESS", "agent1q...")
+
+# Print configuration on startup
+print(f"🔧 Agent Configuration:")
+print(f"   Triage: {TRIAGE_AGENT_ADDRESS}")
+print(f"   Report: {REPORT_AGENT_ADDRESS}")
+print(f"   QA: {QA_AGENT_ADDRESS}")
 
 # Fund agent if needed
 fund_agent_if_low(coordinator.wallet.address())
@@ -85,15 +89,16 @@ fund_agent_if_low(coordinator.wallet.address())
 # Track active analysis requests
 active_requests: Dict[str, Dict[str, Any]] = {}
 
-# Create protocols for different types of communication
-analysis_protocol = Protocol("Analysis Coordination")
-
-@analysis_protocol.on_message(model=AnalysisRequest)
+@coordinator.on_message(model=AnalysisRequest)
 async def handle_analysis_request(ctx: Context, sender: str, msg: AnalysisRequest):
     """Handle analysis requests from the API server"""
     request_id = str(uuid.uuid4())
     
     ctx.logger.info(f"🚀 Starting analysis request {request_id}")
+    
+    # Check if we have valid agent addresses
+    if "agent1q..." in [TRIAGE_AGENT_ADDRESS, REPORT_AGENT_ADDRESS, QA_AGENT_ADDRESS]:
+        ctx.logger.warning("⚠️ Using placeholder agent addresses - update .env file!")
     
     # Initialize request tracking
     active_requests[request_id] = {
@@ -137,7 +142,7 @@ async def handle_analysis_request(ctx: Context, sender: str, msg: AnalysisReques
         )
         await ctx.send(sender, error_response)
 
-@analysis_protocol.on_message(model=ImageAnalysisResponse)
+@coordinator.on_message(model=ImageAnalysisResponse)
 async def handle_triage_response(ctx: Context, sender: str, msg: ImageAnalysisResponse):
     """Handle response from Triage Agent"""
     request_id = msg.request_id
@@ -180,7 +185,7 @@ async def handle_triage_response(ctx: Context, sender: str, msg: ImageAnalysisRe
     except Exception as e:
         await handle_analysis_error(ctx, request_id, f"Failed to send to report agent: {str(e)}")
 
-@analysis_protocol.on_message(model=ReportGenerationResponse)
+@coordinator.on_message(model=ReportGenerationResponse)
 async def handle_report_response(ctx: Context, sender: str, msg: ReportGenerationResponse):
     """Handle response from Report Agent"""
     request_id = msg.request_id
@@ -216,7 +221,7 @@ async def handle_report_response(ctx: Context, sender: str, msg: ReportGeneratio
     except Exception as e:
         await handle_analysis_error(ctx, request_id, f"Failed to send to QA agent: {str(e)}")
 
-@analysis_protocol.on_message(model=QAResponse)
+@coordinator.on_message(model=QAResponse)
 async def handle_qa_response(ctx: Context, sender: str, msg: QAResponse):
     """Handle response from QA Agent"""
     request_id = msg.request_id
@@ -302,22 +307,23 @@ async def finalize_analysis(ctx: Context, request_id: str):
     except Exception as e:
         ctx.logger.error(f"Failed to send final response: {e}")
 
-# Include the protocol in the agent
-coordinator.include(analysis_protocol)
-
-@coordinator.on_startup()
+@coordinator.on_event("startup")
 async def agent_startup(ctx: Context):
     ctx.logger.info(f"🚀 Coordinator Agent starting up...")
     ctx.logger.info(f"📍 Agent address: {coordinator.address}")
-    ctx.logger.info(f"🌐 Agent endpoints: {coordinator.endpoints}")
+    
+    # Log agent configuration
+    ctx.logger.info(f"🔧 Connected agents:")
+    ctx.logger.info(f"   Triage: {TRIAGE_AGENT_ADDRESS}")
+    ctx.logger.info(f"   Report: {REPORT_AGENT_ADDRESS}")
+    ctx.logger.info(f"   QA: {QA_AGENT_ADDRESS}")
 
-@coordinator.on_shutdown()
+@coordinator.on_event("shutdown")
 async def agent_shutdown(ctx: Context):
     ctx.logger.info("👋 Coordinator Agent shutting down...")
 
 if __name__ == "__main__":
     print("🏗️ Starting XightMD Coordinator Agent")
     print(f"📍 Address: {coordinator.address}")
-    print(f"🔗 Endpoints: {coordinator.endpoints}")
     print("=" * 50)
     coordinator.run()

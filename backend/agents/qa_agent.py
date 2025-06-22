@@ -1,4 +1,3 @@
-# backend/agents/qa_agent.py
 from uagents import Agent, Context, Model
 from typing import Dict, Any, Optional, List
 from datetime import datetime
@@ -20,11 +19,12 @@ class QAResponse(Model):
 
 class QAAgent:
     def __init__(self):
+        # Simple agent creation - no wallet parameters
         self.agent = Agent(
             name="qa_agent", 
-            port=8003,
+            port=8006,
             seed="qa_agent_seed_789",
-            endpoint=["http://localhost:8003/submit"]
+            endpoint=["http://localhost:8006/submit"]
         )
         
         # QA validation thresholds
@@ -310,29 +310,12 @@ class QAAgent:
         
         return f"Quality Assessment: {quality_level} (Score: {overall_score:.2f}). {review_status}."
 
-    def get_agent_status(self) -> Dict[str, Any]:
-        """Get current agent status"""
-        return {
-            'name': 'QA Agent',
-            'status': 'active',
-            'address': str(self.agent.address),
-            'capabilities': [
-                'Quality assurance validation',
-                'Consistency checking',
-                'Confidence assessment',
-                'Medical report validation',
-                'Cross-agent result verification'
-            ],
-            'validation_categories': ['confidence', 'consistency', 'completeness', 'clinical_logic'],
-            'thresholds': self.confidence_thresholds,
-            'last_updated': datetime.now().isoformat()
-        }
-
     def run(self):
         """Start the agent"""
         print(f"✅ Starting QA Agent...")
         print(f"📍 Agent address: {self.agent.address}")
-        print(f"🔗 Agent endpoints: {self.agent.endpoints}")
+        print("💡 Running in local mode")
+        print("=" * 50)
         self.agent.run()
 
 if __name__ == "__main__":
