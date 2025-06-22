@@ -201,7 +201,7 @@ class MetricsTracker:
         with open(filepath, 'w') as f:
             json.dump(self.history, f, indent=2)
 
-def train_optimized_model():
+def train_optimized_model(resume_from_checkpoint=None):
     """Main training function with comprehensive monitoring"""
     
     print("🚀 OPTIMIZED LUNG DISEASE CLASSIFIER TRAINING")
@@ -305,11 +305,26 @@ def train_optimized_model():
     # Initialize metrics tracker
     metrics_tracker = MetricsTracker()
     
+    # Add after model setup:
+    start_epoch = 0
+    best_f1 = 0.0
+
+    if resume_from_checkpoint and os.path.exists(resume_from_checkpoint):
+        print(f"🔄 Resuming from checkpoint: {resume_from_checkpoint}")
+        checkpoint = torch.load(resume_from_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint.get('epoch', 0)
+        best_f1 = checkpoint.get('best_f1', 0.0)
+        metrics_tracker.best_f1 = best_f1
+        print(f"✅ Resumed from epoch {start_epoch}")
+
     print(f"\n🎯 Training Setup:")
     print(f"   Device: {device}")
     print(f"   Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     print(f"   Optimizer: AdamW")
     print(f"   Loss function: BCEWithLogitsLoss")
+    print(f"   Starting from epoch: {start_epoch}")
     
     # Training loop
     print(f"\n🚀 Starting training for {config['epochs']} epochs...")
@@ -317,7 +332,7 @@ def train_optimized_model():
     start_time = time.time()
     patience_counter = 0
     
-    for epoch in range(config['epochs']):
+    for epoch in range(start_epoch, config['epochs']):
         epoch_start = time.time()
         print(f"\n{'='*20} Epoch {epoch+1}/{config['epochs']} {'='*20}")
         
@@ -408,11 +423,35 @@ def train_optimized_model():
         if val_metrics['macro_f1'] > metrics_tracker.best_f1:
             patience_counter = 0
             best_model_path = 'models/lung_classifier_BEST.pth'
-            trainer.save_model(best_model_path, epoch + 1, val_metrics)
+            # Save checkpoint with additional info
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_f1': val_metrics['macro_f1'],
+                'val_metrics': val_metrics,
+                'config': config
+            }
+    os.makedirs('models', exist_ok=True)
+            torch.save(checkpoint, best_model_path)
             print(f"🏆 New best model saved! F1: {val_metrics['macro_f1']:.4f}")
         else:
             patience_counter += 1
         
+        # Save checkpoint every few epochs
+        if (epoch + 1) % 5 == 0:
+            checkpoint_path = f'models/lung_classifier_checkpoint_epoch_{epoch+1}.pth'
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_f1': metrics_tracker.best_f1,
+                'val_metrics': val_metrics,
+                'config': config
+            }
+            torch.save(checkpoint, checkpoint_path)
+            print(f"💾 Checkpoint saved: {checkpoint_path}")
+
         # Early stopping
         if patience_counter >= config['patience']:
             print(f"\n🛑 Early stopping triggered after {epoch + 1} epochs")
@@ -422,7 +461,7 @@ def train_optimized_model():
         # Time estimation
         epoch_time = time.time() - epoch_start
         total_time = time.time() - start_time
-        estimated_total = (total_time / (epoch + 1)) * config['epochs']
+        estimated_total = (total_time / (epoch - start_epoch + 1)) * (config['epochs'] - start_epoch)
         remaining = estimated_total - total_time
         
         print(f"⏱️  Epoch time: {epoch_time:.1f}s | Total: {total_time/60:.1f}m | ETA: {remaining/60:.1f}m")
@@ -438,8 +477,15 @@ def train_optimized_model():
     
     # Save final model
     final_model_path = 'models/lung_classifier_FINAL.pth'
-    trainer.save_model(final_model_path, config['epochs'], val_metrics)
-    
+    final_checkpoint = {
+        'epoch': config['epochs'],
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'best_f1': metrics_tracker.best_f1,
+        'val_metrics': val_metrics,
+        'config': config
+    }
+    torch.save(final_checkpoint, final_model_path)
     print(f"\n💾 Models saved:")
     print(f"   Best model: models/lung_classifier_BEST.pth")
     print(f"   Final model: models/lung_classifier_FINAL.pth")
@@ -448,4 +494,6 @@ def train_optimized_model():
     return metrics_tracker.best_f1
 
 if __name__ == "__main__":
+    # Example usage with checkpoint resumption
+    # train_optimized_model(resume_from_checkpoint="models/lung_classifier_checkpoint_epoch_10.pth")
     train_optimized_model()
