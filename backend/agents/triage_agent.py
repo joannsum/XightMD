@@ -48,6 +48,30 @@ class TriageAgent:
             "Pneumonia", "Pneumothorax"
         ]
         
+        # 🔧 IMPROVED DETECTION THRESHOLDS - This is where you make it suck less!
+        self.detection_thresholds = {
+            # Critical conditions - MUCH lower thresholds for better detection
+            "Pneumothorax": 0.10,      # Super sensitive for collapsed lung
+            "Pneumonia": 0.15,         # More sensitive for pneumonia
+            "Mass": 0.12,              # More sensitive for masses
+            "Consolidation": 0.20,     # Lower threshold for consolidation
+            "Effusion": 0.18,          # Lower threshold for effusions
+            
+            # Other important conditions
+            "Cardiomegaly": 0.25,      # Heart enlargement
+            "Atelectasis": 0.30,       # Lung collapse
+            "Edema": 0.25,             # Fluid accumulation
+            "Emphysema": 0.30,         # Lung damage
+            "Fibrosis": 0.30,          # Scarring
+            "Infiltration": 0.28,      # Substance accumulation
+            "Nodule": 0.20,            # Small growths
+            "Pleural_Thickening": 0.35, # Pleural changes
+            "Hernia": 0.40,            # Displacement
+            
+            # Default threshold for any condition not listed above
+            "default": 0.25
+        }
+        
         # Define critical conditions that require immediate attention
         self.critical_conditions = [
             "Pneumothorax",  # Collapsed lung - emergency
@@ -57,8 +81,24 @@ class TriageAgent:
             "Consolidation"  # Lung tissue filling
         ]
         
+        # 🚨 URGENCY CALCULATION IMPROVEMENTS
+        self.urgency_thresholds = {
+            "critical": {
+                "very_high": 0.6,    # Confidence > 60% = urgency 5
+                "high": 0.4,         # Confidence > 40% = urgency 4  
+                "moderate": 0.25,    # Confidence > 25% = urgency 3
+                "low": 0.15          # Confidence > 15% = urgency 2
+            },
+            "non_critical": {
+                "high": 0.5,         # Confidence > 50% = urgency 3
+                "moderate": 0.3,     # Confidence > 30% = urgency 2
+                "low": 0.2           # Confidence > 20% = urgency 2
+            }
+        }
+        
         print("🔗 Triage Agent configured to use Modal service")
         print(f"📡 Modal endpoint: {self.modal_endpoint}")
+        print(f"🔧 Using improved detection thresholds")
         
         # Setup agent handlers
         self.setup_handlers()
@@ -119,25 +159,29 @@ class TriageAgent:
                         if modal_result.get("success", False):
                             # Extract predictions from Modal response
                             predictions = modal_result["predictions"]
-                            modal_confidence = modal_result["confidence"]
-                            modal_urgency = modal_result["urgency"]
                             
-                            # Create significance data for our existing methods
-                            significance = self.create_significance_from_predictions(predictions)
+                            # 🔧 USE OUR IMPROVED ANALYSIS instead of Modal's urgency/confidence
+                            significance = self.create_improved_significance_from_predictions(predictions)
                             
-                            # Use our existing logic for critical findings and formatting
-                            critical_findings = self.identify_critical_findings(significance)
-                            all_findings = self.format_findings(significance)
+                            # Calculate improved urgency and confidence
+                            urgency_score = self.calculate_improved_urgency(significance)
+                            confidence_score = self.calculate_improved_confidence(predictions, significance)
+                            
+                            # Use our improved logic for critical findings
+                            critical_findings = self.identify_improved_critical_findings(significance)
+                            all_findings = self.format_improved_findings(significance)
                             
                             processing_time = (datetime.now() - start_time).total_seconds() * 1000
                             
                             print(f"✅ Modal analysis completed for {request_id}")
+                            print(f"🔍 Found {len(critical_findings)} critical findings")
+                            print(f"📊 Urgency: {urgency_score}, Confidence: {confidence_score:.2f}")
                             
                             return ImageAnalysisResponse(
                                 request_id=request_id,
                                 predictions=predictions,
-                                urgency_score=modal_urgency,
-                                confidence_score=modal_confidence,
+                                urgency_score=urgency_score,
+                                confidence_score=confidence_score,
                                 critical_findings=critical_findings,
                                 all_findings=all_findings,
                                 statistical_significance=significance,
@@ -168,32 +212,41 @@ class TriageAgent:
                 error=f"Modal service error: {str(e)}"
             )
 
-    def create_significance_from_predictions(self, predictions: Dict[str, float]) -> Dict[str, Any]:
-        """Convert Modal predictions to significance format for existing methods"""
+    def create_improved_significance_from_predictions(self, predictions: Dict[str, float]) -> Dict[str, Any]:
+        """Convert Modal predictions to significance format with improved thresholds"""
         significance = {}
         
         for condition, confidence in predictions.items():
-            # Determine if significant (you can adjust threshold)
-            is_significant = confidence > 0.1
+            # Get the threshold for this specific condition
+            threshold = self.detection_thresholds.get(condition, self.detection_thresholds["default"])
             
-            # Determine confidence level
+            # 🔧 Use improved threshold logic
+            is_significant = confidence > threshold
+            
+            # More granular confidence levels
             if confidence > 0.7:
+                confidence_level = "very high"
+            elif confidence > 0.5:
                 confidence_level = "high"
-            elif confidence > 0.4:
-                confidence_level = "medium"
-            else:
+            elif confidence > threshold:
+                confidence_level = "moderate"
+            elif confidence > threshold * 0.7:
                 confidence_level = "low"
+            else:
+                confidence_level = "very low"
             
             significance[condition] = {
                 'significant': is_significant,
                 'confidence': confidence,
-                'confidence_level': confidence_level
+                'confidence_level': confidence_level,
+                'threshold_used': threshold,
+                'above_threshold_margin': confidence - threshold
             }
         
         return significance
 
-    def calculate_urgency(self, significance: Dict[str, Any]) -> int:
-        """Calculate urgency score from 1 (normal) to 5 (critical emergency)"""
+    def calculate_improved_urgency(self, significance: Dict[str, Any]) -> int:
+        """Calculate urgency score with improved sensitivity"""
         max_urgency = 1
         
         for condition, data in significance.items():
@@ -204,50 +257,87 @@ class TriageAgent:
             
             # Critical conditions requiring immediate attention
             if condition in self.critical_conditions:
-                if confidence > 0.8:
+                thresholds = self.urgency_thresholds["critical"]
+                
+                if confidence > thresholds["very_high"]:
                     max_urgency = max(max_urgency, 5)  # Critical
-                elif confidence > 0.6:
-                    max_urgency = max(max_urgency, 4)  # High priority
-                else:
+                elif confidence > thresholds["high"]:
+                    max_urgency = max(max_urgency, 4)  # High priority  
+                elif confidence > thresholds["moderate"]:
                     max_urgency = max(max_urgency, 3)  # Medium priority
+                elif confidence > thresholds["low"]:
+                    max_urgency = max(max_urgency, 2)  # Low priority
             
             # Other significant findings
-            elif confidence > 0.7:
-                max_urgency = max(max_urgency, 3)  # Medium priority
-            elif confidence > 0.5:
-                max_urgency = max(max_urgency, 2)  # Low priority
+            else:
+                thresholds = self.urgency_thresholds["non_critical"]
+                
+                if confidence > thresholds["high"]:
+                    max_urgency = max(max_urgency, 3)  # Medium priority
+                elif confidence > thresholds["moderate"]:
+                    max_urgency = max(max_urgency, 2)  # Low priority
+                elif confidence > thresholds["low"]:
+                    max_urgency = max(max_urgency, 2)  # Low priority
                 
         return max_urgency
 
-    def calculate_overall_confidence(self, predictions: Dict[str, float]) -> float:
-        """Calculate overall confidence in the analysis"""
+    def calculate_improved_confidence(self, predictions: Dict[str, float], significance: Dict[str, Any]) -> float:
+        """Calculate overall confidence with improved logic"""
         if not predictions:
             return 0.0
+        
+        # Get significant findings
+        significant_findings = [
+            (condition, data['confidence']) 
+            for condition, data in significance.items() 
+            if data['significant']
+        ]
+        
+        if not significant_findings:
+            # Even if no findings are significant, provide base confidence
+            max_prediction = max(predictions.values()) if predictions else 0
+            return min(max_prediction * 0.8, 0.7)  # Base confidence
+        
+        # Weight critical conditions more heavily
+        weighted_confidences = []
+        for condition, conf in significant_findings:
+            weight = 1.2 if condition in self.critical_conditions else 1.0
             
-        # Get the top 3 predictions
-        sorted_predictions = sorted(predictions.items(), key=lambda x: x[1], reverse=True)
-        top_predictions = sorted_predictions[:3]
+            # Apply high confidence bonus
+            if conf > 0.7:
+                weight *= 1.15
+            
+            weighted_confidences.append(conf * weight)
         
-        # Weight higher predictions more heavily
-        weighted_sum = sum(conf * (4-i) for i, (_, conf) in enumerate(top_predictions))
-        total_weight = sum(4-i for i in range(len(top_predictions)))
+        # Calculate weighted average
+        avg_confidence = sum(weighted_confidences) / len(weighted_confidences)
         
-        return weighted_sum / total_weight if total_weight > 0 else 0.0
+        # Apply bounds (min 0.5 if we found significant findings, max 0.95)
+        final_confidence = max(0.5, min(avg_confidence, 0.95))
+        
+        return final_confidence
 
-    def identify_critical_findings(self, significance: Dict[str, Any]) -> List[str]:
-        """Identify critical findings requiring immediate attention"""
+    def identify_improved_critical_findings(self, significance: Dict[str, Any]) -> List[str]:
+        """Identify critical findings with improved sensitivity"""
         critical = []
         
         for condition, data in significance.items():
             if (data['significant'] and 
                 condition in self.critical_conditions and 
-                data['confidence'] > 0.3):  # Lowered threshold for mock data
-                critical.append(f"{condition} (confidence: {data['confidence']:.1%})")
+                data['confidence'] > 0.1):  # Very low threshold for critical conditions!
+                
+                # Add detailed information
+                margin = data['above_threshold_margin']
+                critical.append(
+                    f"{condition} (confidence: {data['confidence']:.1%}, "
+                    f"threshold: {data['threshold_used']:.1%}, "
+                    f"margin: +{margin:.1%})"
+                )
                 
         return critical
 
-    def format_findings(self, significance: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Format all significant findings for display"""
+    def format_improved_findings(self, significance: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Format all significant findings with additional metadata"""
         findings = []
         
         for condition, data in significance.items():
@@ -257,6 +347,8 @@ class TriageAgent:
                     'confidence': data['confidence'],
                     'confidence_level': data['confidence_level'],
                     'critical': condition in self.critical_conditions,
+                    'threshold_used': data['threshold_used'],
+                    'margin_above_threshold': data['above_threshold_margin'],
                     'description': self.get_condition_description(condition)
                 })
         
@@ -287,27 +379,30 @@ class TriageAgent:
     def get_agent_status(self) -> Dict[str, Any]:
         """Get current agent status"""
         return {
-            'name': 'Triage Agent',
+            'name': 'Triage Agent (Modal-Enhanced)',
             'status': 'active',
             'address': str(self.agent.address),
             'modal_endpoint': self.modal_endpoint,
             'capabilities': [
                 'Chest X-ray analysis via Modal',
-                'Lung disease detection',
-                'Urgency assessment',
+                'Improved lung disease detection',
+                'Enhanced urgency assessment',
                 'Critical findings identification'
             ],
             'supported_conditions': self.labels,
             'critical_conditions': self.critical_conditions,
+            'detection_thresholds': self.detection_thresholds,
+            'urgency_thresholds': self.urgency_thresholds,
             'last_updated': datetime.now().isoformat()
         }
 
     def run(self):
         """Start the agent"""
-        print(f"🔍 Starting Triage Agent...")
+        print(f"🔍 Starting Enhanced Triage Agent with Modal...")
         print(f"📍 Agent address: {self.agent.address}")
         print(f"🔗 Modal endpoint: {self.modal_endpoint}")
         print(f"🫁 Supported conditions: {self.labels}")
+        print(f"🔧 Detection thresholds: {self.detection_thresholds}")
         print("=" * 50)
         self.agent.run()
 
