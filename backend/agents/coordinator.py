@@ -12,6 +12,8 @@ from pydantic import BaseModel
 import uvicorn
 import threading
 
+MODAL_ENDPOINT = os.getenv("MODAL_ENDPOINT", "https://joannsum--xightmd-simple-predict-lung-conditions.modal.run")
+
 load_dotenv()
 
 # Message models for inter-agent communication

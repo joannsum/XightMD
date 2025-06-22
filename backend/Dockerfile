@@ -1,7 +1,5 @@
-# backend/Dockerfile
 FROM python:3.12.10-slim
 
-# Set working directory
 WORKDIR /app
 
 # Install system dependencies
@@ -10,12 +8,12 @@ RUN apt-get update && apt-get install -y \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Copy minimal requirements for deployment
+COPY requirements-minimal.txt .
 
-# Install Python dependencies
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+# Install Python dependencies with no cache to save space
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements-minimal.txt
 
 # Copy the rest of the application
 COPY . .
